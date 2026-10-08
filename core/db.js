@@ -7,11 +7,12 @@
 // Oracle "/" lines, and BEGIN … END bodies of triggers / procedures / functions / PL/SQL blocks (their inner ";" stay).
 const BLOCK_START = /^(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:DEFINER\s*=\s*\S+|EDITIONABLE|NONEDITIONABLE)\s+)*(?:FUNCTION|PROCEDURE|TRIGGER|PACKAGE|TYPE\s+BODY)|DECLARE|BEGIN)\b/i;
 const isBlock = stmt => BLOCK_START.test(stripComments(stmt).trim());
-function splitSql(sql) {
-  const out = []; let cur = '', i = 0, delim = ';';
+function splitSqlRanges(sql) {
+  const out = []; let cur = '', i = 0, delim = ';', segStart = 0;
   let block = null; // per statement: { depth, begun, dollar, header } once the statement is a code block
   const n = sql.length;
-  const push = () => { out.push(cur); cur = ''; block = null; };
+  // next = index just after the terminator; each statement remembers where it sits in the script
+  const push = next => { out.push({ text: cur, start: segStart, end: next }); cur = ''; block = null; segStart = next; };
   const lineStart = () => i === 0 || sql[i - 1] === '\n';
   while (i < n) {
     const c = sql[i], c2 = sql.slice(i, i + 2);
@@ -29,10 +30,10 @@ function splitSql(sql) {
     }
     if (lineStart()) {
       const dl = /^DELIMITER[ \t]+(\S+)[ \t]*(?:\r?\n|$)/i.exec(sql.slice(i));
-      if (dl) { push(); delim = dl[1]; i += dl[0].length; continue; }
-      if (/^GO[ \t]*(\r?\n|$)/i.test(sql.slice(i))) { push(); i += 2; continue; }
+      if (dl) { push(i + dl[0].length); delim = dl[1]; i += dl[0].length; continue; }
+      if (/^GO[ \t]*(\r?\n|$)/i.test(sql.slice(i))) { push(i + 2); i += 2; continue; }
       const sl = /^\/[ \t]*(?:\r?\n|$)/.exec(sql.slice(i));
-      if (sl) { push(); i += sl[0].length; continue; }
+      if (sl) { push(i + sl[0].length); i += sl[0].length; continue; }
     }
     if (/[A-Za-z_]/.test(c) && !/[\w$]/.test(sql[i - 1] || '')) {
       const word = /^[A-Za-z_]\w*/.exec(sql.slice(i))[0];
@@ -50,13 +51,21 @@ function splitSql(sql) {
       const open = block && !block.dollar && (block.depth > 0 || (!block.begun && block.depth === 0 && block.header));
       if (delim !== ';' || !open) {
         if (block && (block.begun || block.header) && !block.dollar && delim === ';') cur += ';'; // PL/SQL needs "END;" — keep the block's own terminator
-        push(); i += delim.length; continue;
+        push(i + delim.length); i += delim.length; continue;
       }
     }
     cur += c; i++;
   }
-  out.push(cur);
-  return out.map(s => s.trim()).filter(s => stripComments(s).trim());
+  out.push({ text: cur, start: segStart, end: n });
+  return out.filter(x => stripComments(x.text).trim()).map(x => ({ ...x, text: x.text.trim(), start: x.start + (x.text.length - x.text.trimStart().length) }));
+}
+const splitSql = sql => splitSqlRanges(sql).map(x => x.text);
+// The statement the cursor is in (DBeaver's Ctrl+Enter): from its first character to its terminator. A cursor in the
+// gap after a statement (e.g. right after its ";") belongs to that statement. -> text or ''
+function statementAt(sql, offset) {
+  const list = splitSqlRanges(sql);
+  const hit = list.find(x => offset >= x.start && offset <= x.end) || list.filter(x => x.end <= offset).pop();
+  return hit ? hit.text : '';
 }
 
 const stripComments = s => s.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, ' ');
@@ -733,4 +742,4 @@ function exportWriter(fmt, table, engine) {
 }
 const toJson = (columns, rows) => JSON.stringify(rows.map(r => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
 
-module.exports = { open, odbcConnString, FLAVORS, splitSql, classify, selectSql, editSql, compareTables, toCsv, toJson, toInserts, exportWriter, toCell, DEFAULT_PORTS, Q };
+module.exports = { open, odbcConnString, FLAVORS, splitSql, statementAt, classify, selectSql, editSql, compareTables, toCsv, toJson, toInserts, exportWriter, toCell, DEFAULT_PORTS, Q };

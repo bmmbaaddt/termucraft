@@ -1,6 +1,6 @@
 {
   "name": "termucraft",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Open-source Windows workstation for remote work: SSH/SFTP/WSL/serial terminals, tunnels, macros and a full database workbench (PostgreSQL, MySQL/MariaDB, Oracle, SQL Server, SQLite) with an encrypted vault.",
   "main": "main.js",
   "scripts": {

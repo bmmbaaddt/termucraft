@@ -1577,6 +1577,13 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     await closeTab(ot, true);
     return true;
   });
+  await check('db: Run executes only the statement under the cursor (no blank lines between statements)', async () => {
+    dt.cm.setValue("select 'first' as q;\nselect 'second' as q;\nselect 'third' as q;\nselect 'fourth' as q;");
+    dt.cm.setCursor(1, 5); $('[data-a="run"]', dt.pane).click();
+    if (!(await until(() => dt.results.length && dt.results.at(-1).sql === "select 'second' as q"))) throw new Error('ran: ' + dt.results.map(x => x.sql).join(' | '));
+    const ran = dt.results.filter(x => !x.pinned).map(x => x.rows[0] && x.rows[0][0]);
+    return ran.length === 1 && ran[0] === 'second';
+  });
   await check('db: word wrap in the SQL editor (Alt+Z) and in result cells, remembered', async () => {
     const sq = $('.sqlwrapchk', dt.pane), cw = $('.cellwrapchk', dt.pane);
     sq.checked = true; sq.dispatchEvent(new Event('change'));

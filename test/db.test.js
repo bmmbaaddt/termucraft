@@ -12,6 +12,18 @@ test('splitSql handles quotes, comments, dollar blocks and GO', () => {
   assert.deepEqual(db.splitSql("select 'it''s;'; ;  -- only comment"), ["select 'it''s;'"]);
 });
 
+test('statementAt: Run executes only the statement under the cursor', () => {
+  const sql = "select 1;\nselect 'a;b' from t;\nupdate t\n  set x = 1\n  where id = 2;\nselect 4";
+  const at = s => db.statementAt(sql, sql.indexOf(s));
+  assert.equal(at('select 1'), 'select 1');
+  assert.equal(at('a;b'), "select 'a;b' from t");          // ";" inside a string does not split
+  assert.equal(at('set x'), 'update t\n  set x = 1\n  where id = 2'); // a multi-line statement is taken whole
+  assert.equal(db.statementAt(sql, sql.indexOf(';')), 'select 1');      // cursor right at the ";"
+  assert.equal(db.statementAt(sql, sql.indexOf(';') + 1), 'select 1');  // end of that line
+  assert.equal(at('select 4'), 'select 4');
+  assert.equal(db.statementAt('create trigger tr after insert on t begin select 1; select 2; end;\nselect 3', 30), 'create trigger tr after insert on t begin select 1; select 2; end;');
+});
+
 test('splitSql keeps BEGIN…END bodies, DELIMITER and Oracle "/" blocks together', () => {
   const s = db.splitSql;
   // sqlite / mysql trigger with a body

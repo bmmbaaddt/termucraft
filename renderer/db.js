@@ -283,8 +283,8 @@ async function openDb(d, database, script = null) {
   const cm = CodeMirror($('.sqlwrap', pane), {
     value: String((script && script.sql) || ''), mode: { postgres: 'text/x-pgsql', mysql: 'text/x-mariadb', mssql: 'text/x-mssql', oracle: 'text/x-plsql', sqlite: 'text/x-sqlite' }[d.engine] || 'text/x-sql',
     lineNumbers: true, matchBrackets: true, indentUnit: 2, theme: S().appTheme === 'light' ? 'default' : 'material-darker',
-    extraKeys: { 'Ctrl-Enter': () => run(currentSql()), 'Alt-X': () => run(cm.getValue()), 'Ctrl-Space': 'autocomplete', 'Ctrl-F': 'findPersistent', 'Ctrl-S': () => saveScript(),
-      'Shift-Ctrl-E': () => explain(), 'Shift-Ctrl-F': () => formatSql(), 'Ctrl-\\': () => run(currentSql(), { append: true }) },
+    extraKeys: { 'Ctrl-Enter': async () => run(await currentSql()), 'Alt-X': () => run(cm.getValue()), 'Ctrl-Space': 'autocomplete', 'Ctrl-F': 'findPersistent', 'Ctrl-S': () => saveScript(),
+      'Shift-Ctrl-E': () => explain(), 'Shift-Ctrl-F': () => formatSql(), 'Ctrl-\\': async () => run(await currentSql(), { append: true }) },
     hintOptions: { hint: (c, o) => sqlHint(c, o), tables: {}, completeSingle: false },
   });
   cm.setSize('100%', '100%');
@@ -302,7 +302,7 @@ async function openDb(d, database, script = null) {
     const res = CodeMirror.hint.sql(c, o) || { list: [], from: c.getCursor(), to: c.getCursor() };
     const cur = c.getCursor(), tok = c.getTokenAt(cur);
     if (!/^[\w$]+$/.test(tok.string)) return res;
-    const stmt = (currentSql() || '').toLowerCase(), w = tok.string.toLowerCase();
+    const stmt = currentBlock().text.toLowerCase(), w = tok.string.toLowerCase();
     const used = Object.keys(hintTables).filter(n => { const i = stmt.indexOf(n.toLowerCase()); return i >= 0 && !/[\w$]/.test(stmt[i - 1] || '') && !/[\w$]/.test(stmt[i + n.length] || ''); });
     const have = new Set(res.list.map(x => typeof x === 'string' ? x : x.text));
     const cols = [...new Set(used.flatMap(n => hintTables[n]))].filter(x => x.toLowerCase().startsWith(w) && x.toLowerCase() !== w && !have.has(x));
@@ -449,16 +449,23 @@ async function openDb(d, database, script = null) {
     };
   }).catch(() => { $('.dbsel', pane).hidden = true; });
 
-  function currentSql() {
-    if (cm.somethingSelected()) return cm.getSelection();
-    // statement block around the cursor, delimited by blank lines (like DBeaver)
+  // the lines around the cursor up to the nearest blank lines -> { text, start } (start = offset of its first line)
+  function currentBlock() {
     const ln = cm.getCursor().line, last = cm.lineCount() - 1;
     const blank = i => !cm.getLine(i).trim();
     let a = ln, b = ln;
-    if (blank(ln)) return '';
+    if (blank(ln)) return { text: '', start: 0 };
     while (a > 0 && !blank(a - 1)) a--;
     while (b < last && !blank(b + 1)) b++;
-    return cm.getRange({ line: a, ch: 0 }, { line: b, ch: cm.getLine(b).length });
+    return { text: cm.getRange({ line: a, ch: 0 }, { line: b, ch: cm.getLine(b).length }), start: cm.indexFromPos({ line: a, ch: 0 }) };
+  }
+  // What Run / Ctrl+Enter executes (like DBeaver): the selection, otherwise only the statement the cursor is in —
+  // cut at its ";" (quotes, comments and BEGIN…END bodies respected), never the statements around it.
+  async function currentSql() {
+    if (cm.somethingSelected()) return cm.getSelection();
+    const blk = currentBlock();
+    if (!blk.text.trim()) return '';
+    return api.call('db:statementAt', blk.text, cm.indexFromPos(cm.getCursor()) - blk.start);
   }
 
   // ---- transactions: auto-commit / manual commit (DBeaver's transaction mode) ----
@@ -562,7 +569,7 @@ async function openDb(d, database, script = null) {
   tab.run = run;
 
   async function explain() {
-    const sql = currentSql();
+    const sql = await currentSql();
     if (!sql.trim()) return toast('Put the cursor on a statement (or select one)');
     if (tab.status !== 'up') return toast('Not connected', 'bad');
     const keep = tab.results.filter(x => x.pinned);
@@ -982,10 +989,10 @@ async function openDb(d, database, script = null) {
   }
   $('.edbar', pane).addEventListener('click', async e => {
     const a = e.target.closest('button') && e.target.closest('button').dataset.a; if (!a) return;
-    if (a === 'run') run(currentSql());
+    if (a === 'run') run(await currentSql());
     if (a === 'script') run(cm.getValue());
     if (a === 'explain') explain();
-    if (a === 'runnew') run(currentSql(), { append: true });
+    if (a === 'runnew') run(await currentSql(), { append: true });
     if (a === 'format') formatSql();
     if (a === 'tx') txDo(tab.tx.manual ? 'auto' : 'manual');
     if (a === 'commit' || a === 'rollback') txDo(a);

@@ -459,6 +459,7 @@ handle('db:exportQuery', async (id, sql, limit, fmt, table, engine) => {
   return { file: r.filePath, rows: res.rows, more: res.more };
 });
 handle('db:selectSql', (engine, schema, table, limit, where, order) => db.selectSql(engine, schema, table, limit || 200, where, order));
+handle('db:statementAt', (sql, offset) => db.statementAt(String(sql), +offset || 0));
 handle('db:classify', script => db.splitSql(script).map(s => ({ sql: s, ...db.classify(s) })));
 
 // ---------- tunnels ----------
