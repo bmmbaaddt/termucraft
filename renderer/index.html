@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>TermuCraft</title>
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+<link rel="stylesheet" href="../node_modules/codemirror/lib/codemirror.css">
+<link rel="stylesheet" href="../node_modules/codemirror/theme/material-darker.css">
+<link rel="stylesheet" href="../node_modules/codemirror/addon/dialog/dialog.css">
+<link rel="stylesheet" href="../node_modules/codemirror/addon/hint/show-hint.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="toolbar">
+  <div class="brand"><span class="logo">&gt;_</span><span id="brandName">TermuCraft</span></div>
+  <button data-act="newSession" title="New session (Ctrl+Shift+N)"><i>＋</i>Session</button>
+  <button data-act="localShell" title="Local terminal (Ctrl+Shift+T)"><i>⌨</i>Terminal</button>
+  <button data-act="openEditor" title="Text editor"><i>✎</i>Editor</button>
+  <button data-act="newDb" title="New database connection"><i>⛃</i>Database</button>
+  <span class="sep"></span>
+  <button data-act="servers"><i>⛁</i>Servers</button>
+  <button data-act="tools"><i>⚒</i>Tools</button>
+  <button data-act="tunnels"><i>⇄</i>Tunneling</button>
+  <button data-act="passwords"><i>⚿</i>Passwords</button>
+  <span class="sep"></span>
+  <button data-act="record" id="btnRecord" title="Record macro (Ctrl+Shift+R)"><i>●</i>Record</button>
+  <button data-act="multiExec" id="btnMulti" title="Type in all terminals at once (Ctrl+Shift+M)"><i>⧉</i>MultiExec</button>
+  <button data-act="tile" id="btnTile" title="Tile all terminals"><i>▦</i>Tile</button>
+  <button data-act="xserver" id="btnX" title="X11 server"><i>X</i>X server</button>
+  <span class="grow"></span>
+  <button data-act="palette" title="Command palette (Ctrl+Shift+P)"><i>⌘</i>Palette</button>
+  <button data-act="settings" title="Settings / Customizer"><i>⚙</i>Settings</button>
+  <button data-act="lock" title="Lock vault"><i>🔒</i>Lock</button>
+</header>
+<div id="main">
+  <nav id="rail" title="Click the active icon again to hide/show the panel">
+    <button data-side="sessions" class="on" title="Sessions"><i>🖥</i><span>Sessions</span></button>
+    <button data-side="sftp" title="Files (SFTP / local / WSL)"><i>📁</i><span>Files</span></button>
+    <button data-side="db" title="Databases"><i>⛃</i><span>DB</span></button>
+    <button data-side="docker" title="Docker (active SSH host)"><i>🐳</i><span>Docker</span></button>
+    <button data-side="macros" title="Macros"><i>⏺</i><span>Macros</span></button>
+  </nav>
+  <aside id="side">
+    <div id="sidehead"></div>
+    <div id="sidebody"></div>
+  </aside>
+  <div id="resizer"></div>
+  <section id="work">
+    <div id="tabs"></div>
+    <div id="panes"><div id="home"></div></div>
+    <div id="monbar" hidden></div>
+  </section>
+</div>
+<footer id="statusbar"><span id="stLeft"></span><span class="grow"></span><span id="stRight"></span></footer>
+<div id="modals"></div>
+<div id="toasts"></div>
+
+<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
+<script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+<script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+<script src="../node_modules/codemirror/lib/codemirror.js"></script>
+<script src="../node_modules/codemirror/mode/meta.js"></script>
+<script src="../node_modules/codemirror/addon/dialog/dialog.js"></script>
+<script src="../node_modules/codemirror/addon/search/searchcursor.js"></script>
+<script src="../node_modules/codemirror/addon/search/search.js"></script>
+<script src="../node_modules/codemirror/addon/search/jump-to-line.js"></script>
+<script src="../node_modules/codemirror/addon/edit/matchbrackets.js"></script>
+<script src="../node_modules/codemirror/addon/mode/simple.js"></script>
+<script src="../node_modules/codemirror/addon/mode/overlay.js"></script>
+<script src="../node_modules/codemirror/addon/hint/show-hint.js"></script>
+<script src="../node_modules/codemirror/addon/hint/sql-hint.js"></script>
+<script src="../node_modules/codemirror/mode/sql/sql.js"></script>
+<script src="../core/highlight.js"></script>
+<script src="app.js"></script>
+<script src="db.js"></script>
+<script src="import.js"></script>
+</body>
+</html>

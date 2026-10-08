@@ -1,0 +1,21 @@
+# dependencies and build output
+node_modules/
+dist/
+
+# local-only material: third-party reference code, generated screenshots, logs
+.local-dev/
+smoke.png
+*.log
+__pycache__/
+
+# never commit app data or exports (vaults, config exports, password/macro exports)
+vault*.json
+*.tmp
+*-vault.json
+termucraft-*.json
+mobacraft-*.json
+*.mxtpro
+*.mxtmacros
+mxt.macros
+*passwords*.txt
+.env
