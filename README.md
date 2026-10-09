@@ -40,6 +40,7 @@ connections you open to your own servers and databases.
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Contributing](#contributing)
+- [Code signing policy](#code-signing-policy)
 - [Credits and license](#credits-and-license)
 
 ---
@@ -137,8 +138,11 @@ Download a release from the **Releases** page. You do not need Node, Electron or
 | `TermuCraft-<version>-x64.exe` | Installer: Start-menu and desktop shortcuts, lets you choose the folder, upgrades in place. |
 | `TermuCraft-<version>-portable.exe` | A single file that runs without installing; good for a USB stick. |
 
-The builds are not code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*. Click
-**More info → Run anyway**.
+The builds are not code-signed yet (see [Code signing policy](#code-signing-policy)), so Windows SmartScreen may say
+*"Windows protected your PC"*. Click **More info → Run anyway**.
+
+Every release is built and tested on GitHub's own Windows servers from the public source code
+([build log](https://github.com/bmmbaaddt/termucraft/actions)), not on a personal PC.
 
 **Optional tools**, used only if present: a VNC viewer, VcXsrv for X11, Git for Windows (Git Bash for the local
 terminal) and the OpenSSH agent. RDP uses the `mstsc` built into Windows.
@@ -286,6 +290,22 @@ Please:
 - run `npm test` and `npm run smoke` before sending a PR;
 - **never put real hosts, usernames, passwords or exported config files in code, tests, issues or screenshots.** Use made-up values; the existing tests show the pattern;
 - keep the code style: small functions, comments only where something is not obvious.
+
+## Code signing policy
+
+Windows releases are built by [GitHub Actions](.github/workflows/release.yml) from this repository's public source code.
+We have applied for free code signing for open-source projects from the [SignPath Foundation](https://signpath.org).
+Once approved, releases will be signed through [SignPath.io](https://signpath.io) with a certificate issued to SignPath Foundation, and this section will say so.
+
+**Roles**
+- Committers and reviewers: [bmmbaaddt](https://github.com/bmmbaaddt)
+- Approvers (who approve each signed release): [bmmbaaddt](https://github.com/bmmbaaddt)
+
+Only code from this repository, built by the workflow above, is ever signed.
+
+**Privacy policy:** this program does not send any information to other networked systems unless the user asks it
+to: the connections you open to your own servers and databases, the network tools you start (port scan, DNS lookup,
+Wake-on-LAN), and the optional install buttons that run `winget` after you confirm. There is no telemetry and no update check.
 
 ## Credits and license
 

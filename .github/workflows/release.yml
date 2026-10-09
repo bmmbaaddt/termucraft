@@ -1,0 +1,79 @@
+# Builds TermuCraft on GitHub's Windows servers, signs it (once SignPath is set up) and publishes the release.
+#
+#   Release:  git tag v1.0.2 && git push origin v1.0.2   -> build, test, (sign), publish GitHub release
+#   Try out:  Actions tab -> "Build & release" -> Run workflow  -> build + test only, files under "Artifacts"
+#
+# Signing (free for open source, by SignPath Foundation) switches on by itself once these exist in the repo settings:
+#   Settings -> Secrets and variables -> Actions
+#     secret   SIGNPATH_API_TOKEN        (from your SignPath account)
+#     variable SIGNPATH_ORGANIZATION_ID  (from your SignPath account)
+# Until then the release is published unsigned, exactly like before.
+name: Build & release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # publish the release
+
+env:
+  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+jobs:
+  windows:
+    runs-on: windows-latest   # SignPath only signs builds made on GitHub-hosted runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build installer + portable
+        run: npm run dist
+
+      - name: Upload unsigned build
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: termucraft-windows-unsigned
+          path: |
+            dist/TermuCraft-*-x64.exe
+            dist/TermuCraft-*-portable.exe
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: termucraft
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Collect files to publish
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          if (Test-Path signed) { Get-ChildItem signed -Recurse -Filter *.exe | Copy-Item -Destination out }
+          else { Copy-Item dist/TermuCraft-*-x64.exe, dist/TermuCraft-*-portable.exe -Destination out }
+          Get-ChildItem out | Format-Table Name, Length
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.exe
+          generate_release_notes: true

@@ -8,8 +8,8 @@
     "test": "node --test test/core.test.js test/db.test.js test/moba-crypto.test.js test/moba-import.test.js test/dbeaver.test.js test/moba-files.test.js",
     "smoke": "electron . --smoke",
     "icon": "node build/gen-icon.js",
-    "dist": "node build/gen-icon.js && electron-builder --win",
-    "dist:portable": "node build/gen-icon.js && electron-builder --win portable"
+    "dist": "node build/gen-icon.js && electron-builder --win --publish never",
+    "dist:portable": "node build/gen-icon.js && electron-builder --win portable --publish never"
   },
   "author": "TermuCraft contributors",
   "license": "MIT",
