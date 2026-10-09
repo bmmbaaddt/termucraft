@@ -294,7 +294,7 @@ Please:
 ## Code signing policy
 
 Windows releases are built by [GitHub Actions](.github/workflows/release.yml) from this repository's public source code.
-We have applied for free code signing for open-source projects from the [SignPath Foundation](https://signpath.org).
+Free code signing for open-source projects from the [SignPath Foundation](https://signpath.org) is being set up.
 Once approved, releases will be signed through [SignPath.io](https://signpath.io) with a certificate issued to SignPath Foundation, and this section will say so.
 
 **Roles**
