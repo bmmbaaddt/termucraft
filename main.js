@@ -426,37 +426,38 @@ handle('db:tx', async (id, action) => {
 const SQL_DIALECT = { postgres: 'postgresql', mysql: 'mariadb', mssql: 'transactsql', oracle: 'plsql', sqlite: 'sqlite' };
 handle('db:format', (sql, engine) => require('sql-formatter').format(sql, { language: SQL_DIALECT[engine] || 'sql', keywordCase: 'upper' }));
 handle('db:close', async id => { const d = dbs.get(id); if (d) { dbs.delete(id); try { await d.conn.close(); } catch {} d.tunnel && d.tunnel.close(); } });
-async function writeExport(fmt, columns, rows, table, engine) {
-  const r = SMOKE ? { filePath: path.join(app.getPath('userData'), `export-${Date.now()}.${fmt}`) }
-    : await dialog.showSaveDialog(win, { defaultPath: `${safeName(table || 'result')}.${fmt}` });
+// Export to a file, written batch by batch to "<file>.part" and renamed at the end (no half-written files).
+// feed(push) pushes (columns, rows) batches and resolves to { columns, rows, more }.
+async function exportFile(fmt, table, engine, opts, feed) {
+  const F = db.EXPORT_FORMATS[fmt]; if (!F) throw new Error('Unknown export format ' + fmt);
+  const r = SMOKE ? { filePath: path.join(app.getPath('userData'), `export-${Date.now()}.${F.ext}`) }
+    : await dialog.showSaveDialog(win, { defaultPath: `${safeName(table || 'result')}.${F.ext}`, filters: [{ name: F.label, extensions: [F.ext] }, { name: 'All files', extensions: ['*'] }] });
   if (r.canceled) return null;
-  const text = fmt === 'csv' ? db.toCsv(columns, rows) : fmt === 'json' ? db.toJson(columns, rows) : db.toInserts(engine, table || 'table_name', columns, rows);
-  fs.writeFileSync(r.filePath, text, 'utf8');
-  return r.filePath;
-}
-handle('db:export', (fmt, columns, rows, table, engine) => writeExport(fmt, columns, rows, table, engine));
-// Re-run a READ query with a bigger row limit and stream it into a file batch by batch (server cursor -> disk:
-// memory stays flat even for millions of rows; binary values are written in full).
-handle('db:exportQuery', async (id, sql, limit, fmt, table, engine) => {
-  const stmts = db.splitSql(sql);
-  if (stmts.some(s => db.classify(s).write)) throw new Error('Only read queries (SELECT…) can be re-run for export');
-  if (!stmts.length) throw new Error('Nothing to export');
-  const r = SMOKE ? { filePath: path.join(app.getPath('userData'), `export-${Date.now()}.${fmt}`) }
-    : await dialog.showSaveDialog(win, { defaultPath: `${safeName(table || 'result')}.${fmt}` });
-  if (r.canceled) return null;
-  const tmp = r.filePath + '.part', fd = fs.openSync(tmp, 'w'), w = db.exportWriter(fmt, table, engine);
+  const tmp = r.filePath + '.part', fd = fs.openSync(tmp, 'w'), w = db.exportWriter(fmt, table, engine, opts || {});
   let started = false, res;
   try {
-    res = await dbc(id).stream(stmts[stmts.length - 1], Math.max(1, +limit || 1), (cols, rows) => {
+    res = await feed((cols, rows) => {
       if (!started) { fs.writeSync(fd, w.head(cols)); started = true; }
       fs.writeSync(fd, w.rows(cols, rows));
     });
     if (!started) fs.writeSync(fd, w.head(res.columns));
-    fs.writeSync(fd, w.tail());
+    fs.writeSync(fd, w.tail(res.columns));
     fs.closeSync(fd);
-    fs.renameSync(tmp, r.filePath);
+    if (w.pack) { w.pack(tmp, r.filePath); fs.rmSync(tmp, { force: true }); } else fs.renameSync(tmp, r.filePath);
   } catch (e) { try { fs.closeSync(fd); } catch {} fs.rmSync(tmp, { force: true }); throw e; }
-  return { file: r.filePath, rows: res.rows, more: res.more };
+  return { file: r.filePath, rows: res.rows, more: !!res.more };
+}
+handle('db:exportFormats', () => Object.entries(db.EXPORT_FORMATS).map(([k, v]) => ({ id: k, ...v })));
+// rows already in the grid (or the selected cells)
+handle('db:export', (fmt, columns, rows, table, engine, opts) => exportFile(fmt, table, engine, opts, async push => { if (rows.length) push(columns, rows); return { columns, rows: rows.length }; }));
+handle('db:exportText', (fmt, columns, rows, table, engine, opts) => db.exportText(fmt, columns, rows, table, engine, opts));
+// Re-run a READ query with a bigger row limit and stream it into the file (server cursor -> disk: memory stays flat
+// even for millions of rows; binary values are written in full).
+handle('db:exportQuery', async (id, sql, limit, fmt, table, engine, opts) => {
+  const stmts = db.splitSql(sql);
+  if (stmts.some(s => db.classify(s).write)) throw new Error('Only read queries (SELECT…) can be re-run for export');
+  if (!stmts.length) throw new Error('Nothing to export');
+  return exportFile(fmt, table, engine, opts, push => dbc(id).stream(stmts[stmts.length - 1], Math.max(1, +limit || 1), push));
 });
 handle('db:selectSql', (engine, schema, table, limit, where, order) => db.selectSql(engine, schema, table, limit || 200, where, order));
 handle('db:statementAt', (sql, offset) => db.statementAt(String(sql), +offset || 0));

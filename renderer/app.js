@@ -737,6 +737,10 @@ async function toggleRecord() {
 }
 
 // ---------------- sidebar ----------------
+// Folders (sessions, connections, schema trees) start collapsed; the ones the user opens stay open while the app runs.
+const openFolders = new Set();
+document.addEventListener('toggle', e => { const k = e.target.dataset && e.target.dataset.fold; if (k) e.target.open ? openFolders.add(k) : openFolders.delete(k); }, true);
+const foldAttr = (key, force = false) => `data-fold="${esc(key)}"${force || openFolders.has(key) ? ' open' : ''}`;
 let sideMode = 'sessions';
 let sessFilter = '';
 const SIDE_TITLES = { sessions: 'Sessions', sftp: 'Files', db: 'Databases', docker: 'Docker', macros: 'Macros' };
@@ -754,12 +758,12 @@ function renderSide() {
       n.items.push(s);
     }
     const count = n => n.items.length + Object.values(n.kids).reduce((a, k) => a + count(k), 0);
-    const draw = n => Object.keys(n.kids).sort().map(k => `<details class="folder" open><summary>${esc(k)} <span class="dim">(${count(n.kids[k])})</span></summary><div>${draw(n.kids[k])}</div></details>`).join('') +
+    const draw = (n, path = '') => Object.keys(n.kids).sort().map(k => `<details class="folder" ${foldAttr(`sess:${path}/${k}`, !!f)}><summary>${esc(k)} <span class="dim">(${count(n.kids[k])})</span></summary><div>${draw(n.kids[k], `${path}/${k}`)}</div></details>`).join('') +
       n.items.sort((a, b) => a.name.localeCompare(b.name)).map(s => `<div class="item" data-id="${s.id}" title="${esc(s.host || s.url || s.command || '')}"><span class="badge ${s.type}">${s.type}</span><span class="name">${esc(s.name)}</span><span class="acts"><button data-a="edit" title="Edit">✎</button><button data-a="dup" title="Duplicate">⧉</button><button data-a="del" class="danger" title="Delete">✕</button></span></div>`).join('');
     body.innerHTML = `<div class="quick"><input id="quickc" placeholder="Quick connect: user@host:port"><button id="quickgo">Go</button></div>
       <div class="quick"><input id="sfilter" placeholder="Filter sessions…" value="${esc(sessFilter)}"><button id="newsess" title="New session">＋</button></div>
       ${draw(root) || '<p class="dim">No sessions yet. Click ＋ or import from MobaXterm (Tools).</p>'}
-      ${wslDistros.filter(d => !/^docker-desktop/i.test(d)).length ? `<details class="folder" open><summary>WSL (detected)</summary><div>${wslDistros.filter(d => !/^docker-desktop/i.test(d)).map(d => `<div class="item" data-wsl="${esc(d)}" title="Double-click to open"><span class="badge wsl">wsl</span><span class="name">${esc(d)}</span></div>`).join('')}</div></details>` : ''}`;
+      ${wslDistros.filter(d => !/^docker-desktop/i.test(d)).length ? `<details class="folder" ${foldAttr('sess:wsl', !!f)}><summary>WSL (detected)</summary><div>${wslDistros.filter(d => !/^docker-desktop/i.test(d)).map(d => `<div class="item" data-wsl="${esc(d)}" title="Double-click to open"><span class="badge wsl">wsl</span><span class="name">${esc(d)}</span></div>`).join('')}</div></details>` : ''}`;
     $('#sfilter').oninput = e => { sessFilter = e.target.value; const pos = e.target.selectionStart; renderSide(); const i = $('#sfilter'); i.focus(); i.setSelectionRange(pos, pos); };
     $('#newsess').onclick = () => editSession();
     const quick = () => {
@@ -1425,7 +1429,7 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
   await check('db sqlite: create + select', async () => {
     dt = await openDb(sqliteDb);
     await dt.run('create table fruits(id integer primary key, name text); insert into fruits(name) values (\'apple\'),(\'pear\'); select * from fruits order by id');
-    return until(() => dbText(dt).includes('pear') && $$('tbody tr', $('.grid', dt.pane)).length === 2);
+    return until(() => dbText(dt).includes('pear') && $$('tbody tr[data-ri]', $('.grid', dt.pane)).length === 2);
   });
   await check('db sqlite: schema tree + autocomplete tables', async () => until(() => $('.tree', dt.pane).textContent.includes('fruits') && dt.cm.getOption('hintOptions').tables.fruits));
   await check('db sqlite: export helpers via ipc', async () => (await api.call('db:classify', 'delete from fruits'))[0].danger.includes('WHERE'));
@@ -1443,7 +1447,7 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     const grid = () => $('.grid', dt.pane), rowsNow = () => dt.results[dt.cur].rows.map(x => x[1]).join(',');
     const btn = sel => $(sel, dt.pane).click();
     const enter = async (ri, ci, text) => {
-      const td = $('tbody', grid()).children[ri].children[ci + 1];
+      const td = $(`tbody tr[data-ri="${ri}"]`, grid()).cells[ci + 1];
       td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); await sleep(30);
       const inp = $('td.ed input', grid()); if (!inp) throw new Error('no inline editor');
       inp.value = text; inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(30);
@@ -1451,7 +1455,7 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     await dt.run(await api.call('db:selectSql', 'sqlite', '', 'fruits', 200), { table: 'fruits', schema: '' });
     if (!(await until(() => dt.results[0] && dt.results[0].editable === true))) throw new Error('fruits not editable: ' + dt.results[0].noEditWhy);
     await enter(0, 1, 'banana');                                                   // edit apple -> banana
-    $('tbody td.rn', grid()).parentNode.nextElementSibling.firstElementChild.click(); // select row 2 (pear)
+    $('tbody tr[data-ri="1"] td.rn', grid()).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); window.dispatchEvent(new MouseEvent('mouseup')); // select row 2 (pear)
     btn('[data-x="delrow"]');
     btn('[data-x="addrow"]'); await sleep(30);
     $('td.ed input', grid()).dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); await sleep(30); // id: keep default, move to name
@@ -1490,7 +1494,7 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     pets().dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     if (!(await until(() => dt.results.at(-1) && dt.results.at(-1).table === 'pets' && dt.results.at(-1).fks))) throw new Error('pets data / keys not loaded');
     const before = dt.results.length;
-    await menuItem($('tbody', grid()).children[0].children[2], 'Open referenced row in owners');
+    await menuItem($('tbody tr[data-ri="0"]', grid()).cells[2], 'Open referenced row in owners');
     if (!(await until(() => dt.results.length === before + 1 && dt.results.at(-1).table === 'owners' && dt.results.at(-1).rows[0][1] === 'zoe'))) throw new Error('FK navigation failed');
     // pin + run replaces only unpinned results; run in new tab appends
     dt.results.at(-1).pinned = true;
@@ -1499,13 +1503,13 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     btn('[data-a="runnew"]'); if (!(await until(() => dt.results.length === 3))) throw new Error('run in new tab');
     // ${variables}
     dt.cm.setValue('select name from owners where id = ${owner}'); dt.cm.setCursor(0, 5); btn('[data-a="run"]');
-    if (!(await until(() => $('#modals input[data-k="owner"]')))) throw new Error('no variable prompt');
+    if (!(await until(() => $('#modals input[data-k="owner"]')))) throw new Error('no variable prompt; modals: ' + $$('#modals .modal').map(m => m.textContent.slice(0, 120)).join(' | ') + ' grid: ' + $('.grid', dt.pane).textContent.slice(0, 200) + ' results: ' + dt.results.length);
     $('#modals input[data-k="owner"]').value = '7'; $$('#modals .foot button').find(b => b.textContent === 'Run').click();
     if (!(await until(() => dt.results.at(-1).rows[0] && dt.results.at(-1).rows[0][0] === 'zoe'))) throw new Error('variable substitution');
     // large value editor on a JSON cell, saved through the grid
     pets().dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     await until(() => dt.results.at(-1).table === 'pets' && dt.results.at(-1).editable);
-    await menuItem($('tbody', grid()).children[0].children[3], 'large editor');
+    await menuItem($('tbody tr[data-ri="0"]', grid()).cells[3], 'large editor');
     const ta = await until(() => $('#modals textarea')) && $('#modals textarea');
     ta.value = '{"a": 2, "b": [1]}'; $$('#modals .foot button').find(b => b.textContent === 'Apply').click(); await sleep(50);
     btn('[data-x="saveedits"]');
@@ -1518,7 +1522,7 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     await menuItem(pets(), 'Compare / sync');
     await until(() => $('#modals input[data-k="table"]'));
     $('#modals input[data-k="table"]').value = 'pets_copy'; $$('#modals .foot button').find(b => b.textContent === 'Compare').click();
-    if (!(await until(() => $$('#modals .foot button').some(b => /sync statement/.test(b.textContent))))) throw new Error('compare result');
+    if (!(await until(() => $$('#modals .foot button').some(b => /sync statement/.test(b.textContent))))) throw new Error('compare result; toasts: ' + $$('#toasts .toast').map(t => t.textContent).join(' | ') + ' modals: ' + $$('#modals .modal').map(m => m.textContent.slice(0, 150)).join(' | '));
     $$('#modals .foot button').find(b => /sync statement/.test(b.textContent)).click(); await sleep(100);
     const syncSql = dt.cm.getValue();
     if (!/DELETE FROM "pets_copy" WHERE "id" = 9/.test(syncSql) || !/UPDATE "pets_copy"/.test(syncSql)) throw new Error('sync SQL: ' + syncSql.slice(0, 200));
@@ -1595,6 +1599,73 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
     await dt.run('select * from fruits order by id'); await until(() => $('tbody td:not(.rn)', $('.grid', dt.pane)));
     return ok && !dt.cm.getOption('lineWrapping') && localStorage['mxc.cellWrap'] === '0';
   });
+  await check('db grid: mouse + keyboard selection (cells, drag, Shift/Ctrl, rows, columns), copy, virtual rows, binary text, export formats', async () => {
+    activate(dt); await sleep(100);
+    const grid = $('.grid', dt.pane), td = (ri, ci) => $(`tbody tr[data-ri="${ri}"]`, grid).cells[ci + 1];
+    const down = (el, o = {}) => { const b = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: b.left + 4, clientY: b.top + 4, ...o })); window.dispatchEvent(new MouseEvent('mouseup')); };
+    const key = (k, o = {}) => grid.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...o }));
+    let clip = null; const realWrite = navigator.clipboard.writeText; navigator.clipboard.writeText = t => { clip = t; return Promise.resolve(); }; // the smoke window may not have focus
+    const copied = async (headers = false) => { clip = null; key('c', { ctrlKey: true, shiftKey: headers }); await sleep(30); return clip; };
+    const want = async (what, got, exp) => { if (got !== exp) throw new Error(`${what}: ${JSON.stringify(got)} expected ${JSON.stringify(exp)}`); };
+    await dt.run("select 1 as a, 'x' as b, 10 as c union all select 2, 'y', 20 union all select 3, 'z', 30");
+    await until(() => $('tbody tr[data-ri="2"]', grid));
+    down(td(0, 0)); down(td(1, 1), { shiftKey: true });
+    await want('Shift+click block', await copied(), '1\tx\r\n2\ty');
+    down(td(0, 0), { buttons: 1 }); { const b = td(2, 2).getBoundingClientRect(); td(0, 0).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: b.left, clientY: b.top })); window.dispatchEvent(new MouseEvent('mousemove', { clientX: b.left + 4, clientY: b.top + 4 })); window.dispatchEvent(new MouseEvent('mouseup')); }
+    await want('drag-select with column names', await copied(true), 'a\tb\tc\r\n1\tx\t10\r\n2\ty\t20\r\n3\tz\t30');
+    down($('th[data-c="0"]', grid)); down($('th[data-c="2"]', grid), { ctrlKey: true });
+    await want('two columns (header click + Ctrl+click)', await copied(), '1\t10\r\n2\t20\r\n3\t30');
+    if (!/sum 66 · avg 11/.test($('.selinfo', dt.pane).textContent)) throw new Error('selection sum: ' + $('.selinfo', dt.pane).textContent);
+    down($('tr[data-ri="0"] td.rn', grid)); down($('tr[data-ri="2"] td.rn', grid), { shiftKey: true });
+    await want('rows (row numbers + Shift)', await copied(), '1\tx\t10\r\n2\ty\t20\r\n3\tz\t30');
+    down(td(0, 1)); down(td(2, 1), { ctrlKey: true });
+    await want('Ctrl+click cells', await copied(), 'x\r\nz');
+    down(td(0, 0)); key('ArrowDown', { shiftKey: true }); key('ArrowRight', { shiftKey: true });
+    await want('Shift+arrows', await copied(), '1\tx\r\n2\ty');
+    key('a', { ctrlKey: true }); await want('Ctrl+A', (await copied()).split('\r\n').length, 3);
+    // virtual rows: 5000 rows, only the visible part is in the page; Ctrl+End reaches the last row
+    await dt.run('with recursive c(n) as (select 1 union all select n + 1 from c where n < 5000) select n, n * 2 as d from c', { limit: 5000 });
+    await until(() => dt.results.at(-1).rows.length === 5000 && $('tbody tr[data-ri]', grid));
+    const rendered = $$('tbody tr[data-ri]', grid).length;
+    down(td(0, 0)); key('End', { ctrlKey: true }); await sleep(100);
+    const last = $('tbody tr[data-ri="4999"]', grid);
+    if (rendered > 300 || !last || last.cells[2].textContent !== '10000' || !last.cells[2].classList.contains('cf')) throw new Error(`virtual rows: ${rendered} rendered, last=${last && last.textContent}`);
+    // binary values: printable UTF-8 shown as text, other bytes as hex
+    await dt.run("select X'68c3a96c6c6f' as t, X'00ff' as h");
+    await until(() => dt.results.at(-1).rows[0]);
+    await want('binary', dt.results.at(-1).rows[0].join('|'), 'héllo|0x00ff');
+    // every export format, all rows re-run from the server
+    const out = {};
+    for (const fmt of (await api.call('db:exportFormats')).map(x => x.id)) {
+      const res = await api.call('db:exportQuery', dt.connId, 'select n, \'v\' || n as s from big order by n', 2147483647, fmt, 'big', 'sqlite', { nullText: 'NULL' });
+      const text = await api.call('fs', { local: true }, 'read', res.file);
+      out[fmt] = text.length;
+      if (res.rows !== 250 || (fmt === 'xlsx' ? !text.startsWith('PK') : !text.includes('v249'))) throw new Error(`export ${fmt}: ${res.rows} rows, ${text.slice(0, 80)}`);
+    }
+    navigator.clipboard.writeText = realWrite;
+    r.gridSelection = { rendered, exports: out };
+    await dt.run('select * from fruits order by id'); await until(() => $('tbody td:not(.rn)', grid));
+    return true;
+  });
+  await check('navigator: tree and sidebar folders start collapsed; F4 on a name opens it', async () => {
+    activate(dt);
+    if ($$('.tree details[open]', dt.pane).length) throw new Error('tree has open folders: ' + $$('.tree details[open] > summary', dt.pane).map(x => x.textContent.trim()).join(', '));
+    if (!$$('.tree details.folder > summary', dt.pane).some(x => /^Tables/.test(x.textContent)) || !$$('.tree details.folder > summary', dt.pane).some(x => /^Triggers/.test(x.textContent))) throw new Error('no Tables / Triggers folders');
+    dt.cm.setValue('select * from fruits'); dt.cm.setCursor(0, 17);
+    dt.cm.triggerOnKeyDown({ type: 'keydown', keyCode: 115, preventDefault() {}, stopPropagation() {} }); // F4
+    if (!(await until(() => $$('#modals .modal h2').some(x => /Properties — fruits/.test(x.textContent))))) throw new Error('F4 did not open the table');
+    $$('#modals .back').forEach(b => b.remove());
+    const opened = $$('.tree details[open] > summary', dt.pane).map(x => x.textContent.trim().split(' ')[0]);
+    if (!opened.includes('Tables')) throw new Error('F4 did not reveal the table: ' + opened);
+    const s = { id: uid(), type: 'ssh', name: 'fold-test', host: 'h', folder: 'smokefold/inner' }; V.sessions.push(s);
+    sideMode = 'sessions'; renderSide();
+    const fold = () => $('#sidebody details[data-fold="sess:/smokefold"]');
+    if (!fold() || fold().open) throw new Error('session folder not collapsed');
+    fold().open = true; await sleep(30); renderSide();
+    const kept = fold().open;
+    V.sessions = V.sessions.filter(x => x !== s); openFolders.delete('sess:/smokefold'); renderSide();
+    return kept;
+  });
   await check('right-click menus (session, db, script, table, cell, files) + splitter drag', async () => {
     const menu = async (el, min) => { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 50, clientY: 50 })); await sleep(50); const n = $$('.ctxmenu div').length; $$('.ctxmenu').forEach(m => m.remove()); if (n < min) throw new Error(`menu on ${el.className || el.tagName} had ${n} items`); };
     sideMode = 'sessions'; renderSide(); await menu($('#sidebody .item[data-id]'), 8);
@@ -1627,6 +1698,14 @@ window.smoke = async ({ port, live, dbs = [], tmp, keyFile, canInstallKey }) => 
         if (t.status !== 'up') throw new Error($('.tree', t.pane).textContent);
         await t.run("select 1 as one, 'x' as two" + (cfg.engine === 'oracle' ? ' from dual' : ''));
         const ok = await until(() => /one/i.test(dbText(t)) && dbText(t).includes('x')) && await until(() => !/Loading/.test($('.tree', t.pane).textContent));
+        // navigator folders (collapsed) and grid selection + copy on a real server
+        const folders = () => $$('.tree details.folder > summary', t.pane).map(x => x.textContent.trim().split(' (')[0]);
+        if (cfg.expectFolders && !(await until(() => cfg.expectFolders.every(f => folders().includes(f))))) throw new Error('tree folders: ' + folders().join(', ')); // routines load just after the tables
+        if ($$('.tree details[open]', t.pane).length) throw new Error('tree not collapsed');
+        let clip = null; const realWrite = navigator.clipboard.writeText; navigator.clipboard.writeText = x => { clip = x; return Promise.resolve(); };
+        const g = $('.grid', t.pane); g.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true })); g.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, shiftKey: true, bubbles: true }));
+        await sleep(30); navigator.clipboard.writeText = realWrite;
+        if (!/^one\ttwo\r\n1\tx$/i.test(clip || '')) throw new Error('copy: ' + JSON.stringify(clip));
         await closeTab(t, true);
         return ok;
       });

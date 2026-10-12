@@ -211,6 +211,24 @@ async function liveEdits(c, engine, schema, t) {
   await c.query(`drop ${engine === 'postgres' ? 'function' : 'procedure'} ${engine === 'oracle' ? fn.toUpperCase() : fn}`);
 }
 
+// views / materialized views in the navigator with their DDL, long GROUP_CONCAT, binary values shown as text
+async function liveNavigator(c, engine) {
+  const v = 'mxc_v' + (Date.now() % 100000), mv = v + 'm';
+  const t = engine === 'oracle' ? 'dual' : '(select 1 as n) x';
+  await c.query(`create view ${v} as select 1 as n from ${t}`);
+  const hasMv = engine === 'postgres' || engine === 'oracle';
+  if (hasMv) await c.query(`create materialized view ${mv} as select 2 as n from ${t}`);
+  const s = await c.schema(), find = n => s.find(x => x.name.toLowerCase() === n);
+  assert.equal(find(v).type, 'VIEW');
+  assert.match(await c.ddl(find(v).schema, find(v).name), /view/i);
+  if (hasMv) { assert.equal(find(mv).type, 'MVIEW'); assert.ok(find(mv).columns.length); assert.match(await c.ddl(find(mv).schema, find(mv).name), /materialized view/i); }
+  const bin = { postgres: "select 'hi'::bytea, '\\x00ff'::bytea", mysql: "select cast('hi' as binary), unhex('00ff')", oracle: "select to_blob(utl_raw.cast_to_raw('hi')), hextoraw('00FF') from dual" }[engine];
+  if (bin) { const [b] = await c.query(bin); assert.deepEqual(b.rows[0].map(x => String(x).toLowerCase()), ['hi', '0x00ff']); }
+  if (engine === 'mysql') { const [g] = await c.query("select group_concat(x) from (select repeat('a', 2000) as x union all select repeat('b', 2000)) t"); assert.equal(String(g.rows[0][0]).length, 4001); }
+  if (hasMv) await c.query(`drop materialized view ${mv}`);
+  await c.query(`drop view ${v}`);
+}
+
 // Real servers: set MXC_PG / MXC_MYSQL to a JSON connection config to run these.
 for (const [env, engine] of [['MXC_PG', 'postgres'], ['MXC_MYSQL', 'mysql'], ['MXC_MSSQL', 'mssql']]) {
   test(`${engine} live`, { skip: !process.env[env] && `${env} not set` }, async () => {
@@ -228,6 +246,7 @@ for (const [env, engine] of [['MXC_PG', 'postgres'], ['MXC_MYSQL', 'mysql'], ['M
     assert.ok((await c.databases()).length > 0);
     assert.ok((await c.ddl(s.find(x => x.name === t).schema, t)).includes('name'));
     await liveEdits(c, engine, s.find(x => x.name === t).schema, t);
+    await liveNavigator(c, engine);
     await c.query(`drop table ${t}`);
     c.close();
     const ro = await db.open({ ...cfg, readOnly: true });
@@ -251,9 +270,52 @@ test('oracle live', { skip: !process.env.MXC_ORACLE && 'MXC_ORACLE not set' }, a
   assert.ok((await c.ddl(s.find(x => x.name === t).schema, t)).length > 0);
   await c.query(`insert into ${t} values (2, null)`);
   await liveEdits(c, 'oracle', s.find(x => x.name === t).schema, t);
+  await liveNavigator(c, 'oracle');
   await c.query(`drop table ${t}`);
   c.close();
   const ro = await db.open({ ...cfg, readOnly: true });
   await assert.rejects(ro.query(`create table ${t} (id number)`), /Read-only/);
   ro.close();
+});
+
+test('binary values: printable UTF-8 is decoded, other bytes are hex, big values are cut only in the grid preview', () => {
+  assert.equal(db.toCell(Buffer.from('héllo, wörld\n')), 'héllo, wörld\n');
+  assert.equal(db.toCell(new Uint8Array([0xde, 0xad, 0xbe, 0xef])), '0xdeadbeef');
+  assert.equal(db.toCell(Buffer.from([0x00, 0x41])), '0x0041');                 // control bytes stay hex
+  assert.equal(db.toCell(new Uint8Array([0x68, 0x69]).buffer), 'hi');           // ODBC ArrayBuffer
+  const big = Buffer.from('é'.repeat(40000));                                    // 80,000 bytes, cut inside a character
+  assert.match(db.toCell(big), /^é+ … \[80000 bytes\]$/);
+  assert.equal(db.toCell(big, true), 'é'.repeat(40000));
+});
+
+test('export formats: every value whole, options for header / delimiter / NULL text / BOM', () => {
+  const cols = ['id', 'note'], rows = [[1, 'a|b\nc'], [22, null]];
+  const t = (fmt, o) => db.exportText(fmt, cols, rows, 'tbl', 'postgres', o);
+  assert.equal(t('csv', { delimiter: ';', nullText: 'NULL' }), 'id;note\r\n1;"a|b\nc"\r\n22;NULL\r\n');
+  assert.equal(t('tsv', { header: false }), '1\t"a|b\nc"\r\n22\t\r\n');
+  assert.equal(t('txt'), '| id | note  |\r\n|----|-------|\r\n|  1 | a|b c |\r\n| 22 |       |\r\n');
+  assert.equal(t('md'), '| id | note |\n| --- | --- |\n| 1 | a\\|b<br>c |\n| 22 |  |\n');
+  assert.match(t('html'), /<tr><td class="n">1<\/td><td>a\|b\nc<\/td><\/tr>/);
+  assert.match(t('xml'), /<column name="note" null="true"\/>/);
+  assert.deepEqual(JSON.parse(t('json')), [{ id: 1, note: 'a|b\nc' }, { id: 22, note: null }]);
+  assert.equal(t('csv', { bom: true }).charCodeAt(0), 0xfeff);
+  assert.equal(db.exportText('txt', cols, [], 't'), '| id | note |\r\n|----|------|\r\n');      // no rows: header only
+});
+
+test('xlsx export is a valid zip with the sheet inside', () => {
+  const zlib = require('zlib');
+  const w = db.exportWriter('xlsx', 'my/sheet', 'postgres');
+  const sheet = w.head(['n', 's']) + w.rows(['n', 's'], [[1.5, 'x<y'], [null, 'é']]) + w.tail();
+  const zip = db.xlsxZip(Buffer.from(sheet), 'my/sheet');
+  // walk the local file headers and inflate each entry
+  const files = {};
+  for (let p = 0; zip.readUInt32LE(p) === 0x04034b50;) {
+    const size = zip.readUInt32LE(p + 18), nl = zip.readUInt16LE(p + 26), name = zip.toString('utf8', p + 30, p + 30 + nl);
+    const data = zlib.inflateRawSync(zip.subarray(p + 30 + nl, p + 30 + nl + size));
+    assert.equal(zlib.crc32(data), zip.readUInt32LE(p + 14));
+    files[name] = data.toString(); p += 30 + nl + size;
+  }
+  assert.deepEqual(Object.keys(files).sort(), ['[Content_Types].xml', '_rels/.rels', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml', 'xl/workbook.xml', 'xl/worksheets/sheet1.xml']);
+  assert.match(files['xl/worksheets/sheet1.xml'], /<c><v>1.5<\/v><\/c><c t="inlineStr"><is><t xml:space="preserve">x&lt;y<\/t>/);
+  assert.match(files['xl/workbook.xml'], /name="my sheet"/);
 });

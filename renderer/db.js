@@ -159,7 +159,7 @@ function renderDbSide(body) {
   };
   const byFolder = ds => {
     const g = {}; for (const d of ds) (g[d.folder || ''] = g[d.folder || ''] || []).push(d);
-    return Object.keys(g).sort().map(k => k ? `<details class="folder" open><summary>${esc(k)} <span class="dim">(${g[k].length})</span></summary><div>${g[k].map(conn).join('')}</div></details>` : g[k].map(conn).join('')).join('');
+    return Object.keys(g).sort().map(k => k ? `<details class="folder" ${foldAttr('dbf:' + k, !!f)}><summary>${esc(k)} <span class="dim">(${g[k].length})</span></summary><div>${g[k].map(conn).join('')}</div></details>` : g[k].map(conn).join('')).join('');
   };
   $('#sidehead').innerHTML = `<span>Databases</span><span class="grow"></span><span style="text-transform:none;letter-spacing:0;font-weight:400">${connected.length} connected · ${V.dbs.length}</span>`;
   body.innerHTML = `<div class="quick"><button id="dbnew" class="grow">＋ New</button><button id="dbimp" title="Import connections + scripts from DBeaver">⇣ DBeaver</button></div>
@@ -367,22 +367,52 @@ async function openDb(d, database, script = null) {
     cm.setOption('hintOptions', { hint: (c, o) => sqlHint(c, o), tables, completeSingle: false });
     drawTree();
   }
+  // DBeaver-style navigator: schema › Tables / Views / Materialized views / Functions / Procedures / Packages /
+  // Sequences / Triggers. Everything starts collapsed (opened folders stay open); typing a filter opens the folders with matches.
+  const TABLE_KINDS = [['TABLE', '▦', 'Tables'], ['VIEW', '👁', 'Views'], ['MVIEW', '◫', 'Materialized views']];
+  const OBJ_KINDS = [['FUNCTION', 'ƒ', 'Functions'], ['PROCEDURE', '⚙', 'Procedures'], ['PACKAGE', '📦', 'Packages'], ['SEQUENCE', '#', 'Sequences'], ['TRIGGER', '⚡', 'Triggers']];
+  const treeKey = (...p) => `tree:${d.id}:${p.join(':')}`;
+  const kindIcon = type => (TABLE_KINDS.find(k => k[0] === type) || TABLE_KINDS[0])[1];
   function drawTree() {
-    const f = $('.tfilter', pane).value.toLowerCase();
-    const bySchema = {};
-    schema.filter(t => !f || t.name.toLowerCase().includes(f)).forEach((t, i) => (bySchema[t.schema] = bySchema[t.schema] || []).push([t, schema.indexOf(t)]));
-    const objsOf = {};
-    objects.forEach((o, i) => { if (f && !o.name.toLowerCase().includes(f)) return; (objsOf[o.schema] = objsOf[o.schema] || []).push([o, i]); bySchema[o.schema] = bySchema[o.schema] || []; });
-    const KIND = { FUNCTION: ['ƒ', 'Functions'], PROCEDURE: ['⚙', 'Procedures'], PACKAGE: ['📦', 'Packages'], SEQUENCE: ['#', 'Sequences'], TRIGGER: ['⚡', 'Triggers'] };
-    const objFolders = s => Object.keys(KIND).map(k => { const list = (objsOf[s] || []).filter(([o]) => o.type === k); return list.length ? `<details class="folder"><summary>${KIND[k][1]} <span class="dim">(${list.length})</span></summary><div>${list.map(([o, i]) => `<div class="obj" data-o="${i}" title="Double-click: show source">${KIND[k][0]} ${esc(o.name)}</div>`).join('')}</div></details>` : ''; }).join('');
-    const multi = Object.keys(bySchema).length > 1;
+    const f = $('.tfilter', pane).value.toLowerCase(), hit = n => !f || n.toLowerCase().includes(f);
+    const schemas = [...new Set([...schema.map(t => t.schema || ''), ...objects.map(o => o.schema || '')])].sort();
+    const folder = (key, label, n, inner) => n ? `<details class="folder" ${foldAttr(key, !!f)}><summary>${label} <span class="dim">(${n})</span></summary><div>${inner}</div></details>` : '';
+    const tableItem = t => { const i = schema.indexOf(t); return `<details class="tbl" ${foldAttr(treeKey('t', t.schema || '', t.name))}><summary data-i="${i}" title="Double-click: view data · right-click: more">${kindIcon(t.type)} ${esc(t.name)}<span class="acts"><button data-t="data" data-i="${i}" title="View data">▤</button><button data-t="ddl" data-i="${i}" title="DDL">DDL</button><button data-t="count" data-i="${i}" title="Row count">#</button></span></summary>
+        <div>${t.columns.map(c => `<div class="col"><span>${esc(c.name)}</span><span class="dim">${esc(c.type)}${c.nullable ? '' : ' · not null'}</span></div>`).join('')}</div></details>`; };
+    const html = schemas.map(s => {
+      const ts = schema.filter(t => (t.schema || '') === s && hit(t.name)), os = objects.map((o, i) => [o, i]).filter(([o]) => (o.schema || '') === s && hit(o.name));
+      const inner = TABLE_KINDS.map(([k, , label]) => { const l = ts.filter(t => t.type === k); return folder(treeKey(s, k), label, l.length, l.map(tableItem).join('')); }).join('')
+        + OBJ_KINDS.map(([k, icon, label]) => { const l = os.filter(([o]) => o.type === k); return folder(treeKey(s, k), label, l.length, l.map(([o, i]) => `<div class="obj" data-o="${i}" title="Double-click: show source">${icon} ${esc(o.name)}</div>`).join('')); }).join('');
+      return schemas.length > 1 || s ? folder(treeKey(s), esc(s || 'main'), ts.length + os.length, inner) : inner;
+    }).join('');
     $('.tree', pane).classList.remove('dim');
-    $('.tree', pane).innerHTML = Object.entries(bySchema).map(([s, ts]) => {
-      const items = ts.map(([t, i]) => `<details class="tbl"><summary data-i="${i}" title="Double-click: view data">${t.type === 'VIEW' ? '👁' : '▦'} ${esc(t.name)}<span class="acts"><button data-t="data" data-i="${i}" title="View data">▤</button><button data-t="ddl" data-i="${i}" title="DDL">DDL</button><button data-t="count" data-i="${i}" title="Row count">#</button></span></summary>
-        <div>${t.columns.map(c => `<div class="col"><span>${esc(c.name)}</span><span class="dim">${esc(c.type)}${c.nullable ? '' : ' · not null'}</span></div>`).join('')}</div></details>`).join('');
-      return multi || s ? `<details class="folder" ${multi && !f ? '' : 'open'}><summary>${esc(s || 'main')} <span class="dim">(${ts.length})</span></summary><div>${items}${objFolders(s)}</div></details>` : items + objFolders(s);
-    }).join('') || '<p class="dim">No tables</p>';
+    $('.tree', pane).innerHTML = html || `<p class="dim">${f ? 'No match' : 'No tables'}</p>`;
   }
+  // F4 / Ctrl+click on a name in the SQL editor (DBeaver "open declaration"): finds the table, view, materialized view
+  // or routine, opens its folders in the navigator, and shows it (properties, or the routine's source).
+  function openObjectAt(pos) {
+    const w = cm.findWordAt(pos), name = cm.getRange(w.anchor, w.head);
+    if (!/^[\w$]+$/.test(name)) return false;
+    const before = cm.getRange(CodeMirror.Pos(w.anchor.line, 0), w.anchor);
+    const sm = /([\w$]+)["`\]]?\.["`[]?$/.exec(before), sch = sm ? sm[1].toLowerCase() : null;
+    const lc = name.toLowerCase(), inSchema = x => sch === null || (x.schema || '').toLowerCase() === sch;
+    const t = schema.find(x => x.name.toLowerCase() === lc && inSchema(x));
+    const oi = t ? -1 : objects.findIndex(o => o.name.toLowerCase().replace(/\(.*$|\s+on\s.*$/, '') === lc && inSchema(o));
+    if (!t && oi < 0) { toast(`"${name}" is not a table, view or routine of this connection`); return true; }
+    const o = t || objects[oi], s = o.schema || '';
+    openFolders.add(treeKey(s)); openFolders.add(treeKey(s, t ? t.type : o.type));
+    $('.tfilter', pane).value = ''; drawTree();
+    const el = t ? $(`.tree summary[data-i="${schema.indexOf(t)}"]`, pane) : $(`.tree .obj[data-o="${oi}"]`, pane);
+    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 2000); }
+    t ? showProps(t) : showSource(o);
+    return true;
+  }
+  cm.addKeyMap({ F4: c => { openObjectAt(c.getCursor()); } });
+  cm.getWrapperElement().addEventListener('mousedown', e => {
+    if (!e.ctrlKey || e.button !== 0) return;
+    const pos = cm.coordsChar({ left: e.clientX, top: e.clientY }, 'window');
+    if (/^[\w$]+$/.test(cm.getRange(cm.findWordAt(pos).anchor, cm.findWordAt(pos).head)) && schema.length) { e.preventDefault(); openObjectAt(pos); }
+  }, true);
   $('.tfilter', pane).oninput = drawTree;
   const quote = x => { const q = { postgres: '"', sqlite: '"', oracle: '"', mysql: '`', mssql: '[' }[SQLX] || '"'; return q === '[' ? `[${x.replace(/]/g, ']]')}]` : q + x.split(q).join(q + q) + q; };
   const fullName = t => `${t.schema ? quote(t.schema) + '.' : ''}${quote(t.name)}`;
@@ -413,13 +443,15 @@ async function openDb(d, database, script = null) {
       ['# Count rows', () => tableAction('count', t)],
       ['DDL…', () => tableAction('ddl', t)],
       ['Properties (keys, indexes, foreign keys)…', () => tableAction('props', t)],
-      ['ER diagram (this table + related)…', () => erDiagram(t)],
+      ...(t.type === 'TABLE' ? [['ER diagram (this table + related)…', () => erDiagram(t)]] : []),
       ['⇄ Compare / sync data with another table…', () => compareWith(t)],
       '-',
       ['Insert SELECT into editor', () => ins(`SELECT ${cols || '*'}\nFROM ${fullName(t)};`)],
-      ['Insert INSERT into editor', () => ins(`INSERT INTO ${fullName(t)} (${cols})\nVALUES (${t.columns.map(() => '?').join(', ')});`)],
-      ['Insert UPDATE into editor', () => ins(`UPDATE ${fullName(t)}\nSET ${t.columns.map(c => `${quote(c.name)} = ?`).join(',\n    ')}\nWHERE …;`)],
-      ['Insert DELETE into editor', () => ins(`DELETE FROM ${fullName(t)}\nWHERE …;`)],
+      ...(t.type === 'TABLE' ? [
+        ['Insert INSERT into editor', () => ins(`INSERT INTO ${fullName(t)} (${cols})\nVALUES (${t.columns.map(() => '?').join(', ')});`)],
+        ['Insert UPDATE into editor', () => ins(`UPDATE ${fullName(t)}\nSET ${t.columns.map(c => `${quote(c.name)} = ?`).join(',\n    ')}\nWHERE …;`)],
+        ['Insert DELETE into editor', () => ins(`DELETE FROM ${fullName(t)}\nWHERE …;`)]] : []),
+      ...(t.type === 'MVIEW' ? [['Insert REFRESH into editor', () => ins(SQLX === 'oracle' ? `BEGIN DBMS_MVIEW.REFRESH('${t.schema ? t.schema + '.' : ''}${t.name}'); END;` : `REFRESH MATERIALIZED VIEW ${fullName(t)};`)]] : []),
       '-',
       ['Copy table name', () => copyText(fullName(t))],
       ['Copy column list', () => copyText(cols)],
@@ -526,7 +558,7 @@ async function openDb(d, database, script = null) {
     if (r.editable) r.ed = freshEdits();
   }
 
-  async function run(sql, { table = null, schema: sch = null, where = '', order = '', quiet = false, append = false } = {}) {
+  async function run(sql, { table = null, schema: sch = null, where = '', order = '', quiet = false, append = false, limit = 0 } = {}) {
     if (!sql.trim()) return toast('Nothing to run');
     if (tab.status !== 'up') return toast('Not connected', 'bad');
     if (!quiet && !append && !(await discardOk(tab.results.filter(x => !x.pinned)))) return;
@@ -547,7 +579,7 @@ async function openDb(d, database, script = null) {
     tab.running = true; $('.rstatus', pane).textContent = 'Running…';
     const t0 = Date.now();
     try {
-      const res = await api.call('db:query', tab.connId, sql, { limit: +$('.lim', pane).value || 1000 });
+      const res = await api.call('db:query', tab.connId, sql, { limit: limit || +$('.lim', pane).value || 1000 });
       if (!quiet) {
         const fresh = res.map(r => ({ ...r, table, schema: sch, where, order }));
         if (!table && fresh.length === 1) inferTable(fresh[0]);
@@ -562,7 +594,7 @@ async function openDb(d, database, script = null) {
       if (!table) { V.dbHistory = [{ sql: typed, at: Date.now(), db: d.name }, ...(V.dbHistory || []).filter(x => x.sql !== typed)].slice(0, 300); save('dbHistory'); }
       if (stmts.some(s => /^\s*(create|drop|alter)\b/i.test(s.sql))) loadSchema();
     } catch (e) {
-      $('.grid', pane).innerHTML = `<pre class="out" style="color:var(--bad);margin:8px">${esc(e.message)}</pre>`;
+      tab.view = []; $('.grid', pane).innerHTML = `<pre class="out" style="color:var(--bad);margin:8px">${esc(e.message)}</pre>`;
       $('.rstatus', pane).textContent = `Error after ${Date.now() - t0} ms`;
     } finally { tab.running = false; refreshTx(); }
   }
@@ -575,7 +607,7 @@ async function openDb(d, database, script = null) {
     const keep = tab.results.filter(x => x.pinned);
     if (!(await discardOk(tab.results.filter(x => !x.pinned)))) return;
     try { tab.results = [...keep, await api.call('db:explain', tab.connId, sql)]; tab.cur = tab.results.length - 1; drawResults(); }
-    catch (e) { $('.grid', pane).innerHTML = `<pre class="out" style="color:var(--bad);margin:8px">${esc(e.message)}</pre>`; }
+    catch (e) { tab.view = []; $('.grid', pane).innerHTML = `<pre class="out" style="color:var(--bad);margin:8px">${esc(e.message)}</pre>`; }
   }
 
   async function formatSql() {
@@ -600,7 +632,7 @@ async function openDb(d, database, script = null) {
   // focus = a table: draws it with the tables it references and the tables referencing it. Boxes can be dragged.
   async function erDiagram(focus = null) {
     const f = $('.tfilter', pane).value.toLowerCase();
-    const tablesOnly = schema.filter(t => t.type !== 'VIEW');
+    const tablesOnly = schema.filter(t => t.type === 'TABLE');
     let list = focus ? [focus] : tablesOnly.filter(t => !f || t.name.toLowerCase().includes(f));
     if (!list.length) return toast('No tables to draw');
     if (list.length > 80) { toast(`Showing the first 80 of ${list.length} tables: type in the table filter to narrow it`); list = list.slice(0, 80); }
@@ -714,40 +746,225 @@ async function openDb(d, database, script = null) {
     } catch (e) { toast(e.message, 'bad'); }
   }
 
-  let sortCol = -1, sortDir = 1;
+  // ---- result grid (DBeaver-style): only the visible rows are in the page (smooth with 100k+ rows), fixed column
+  // widths (drag a header edge), cell / row / column selection with mouse and keyboard, Ctrl+C copies the selection.
+  let sortCol = -1, sortDir = 1, rowH = 24, win = '', drag = null;
+  const grid = $('.grid', pane);
+  grid.tabIndex = 0;
+  const resetSel = () => { tab.sel = { ranges: [], anchor: null, focus: null, mode: 'cell' }; };
+  resetSel();
+  tab.view = [];
+  const rnW = () => Math.max(44, String(tab.view.length).length * 8 + 22);
+  const lastIdx = () => ({ r: tab.view.length - 1, c: tab.results[tab.cur].columns.length - 1 });
+  const rect = (a, b) => ({ r0: Math.min(a.r, b.r), r1: Math.max(a.r, b.r), c0: Math.min(a.c, b.c), c1: Math.max(a.c, b.c) });
+  const inSel = (ri, ci) => tab.sel.ranges.some(R => ri >= R.r0 && ri <= R.r1 && ci >= R.c0 && ci <= R.c1);
+  const spread = k => { const s = new Set(); for (const R of tab.sel.ranges) for (let i = R[k + '0']; i <= R[k + '1']; i++) s.add(i); return [...s].sort((a, b) => a - b); };
+  const selRowIdx = () => spread('r'), selColIdx = () => spread('c');
+  const selRows = () => selRowIdx().map(i => tab.view[i]);
+  // mode: 'cell' | 'row' (whole rows, row numbers) | 'col' (whole columns, headers). Shift extends from the anchor, Ctrl adds.
+  function select(to, { shift = false, ctrl = false, mode = 'cell' } = {}) {
+    const s = tab.sel, L = lastIdx();
+    if (L.r < 0) return;
+    const span = R => mode === 'row' ? { ...R, c0: 0, c1: L.c } : mode === 'col' ? { ...R, r0: 0, r1: L.r } : R;
+    if (shift && s.anchor) s.ranges[Math.max(0, s.ranges.length - 1)] = span(rect(s.anchor, to));
+    else if (ctrl && s.ranges.length > 1 && mode === 'cell' && s.ranges.some(R => R.r0 === to.r && R.r1 === to.r && R.c0 === to.c && R.c1 === to.c)) s.ranges = s.ranges.filter(R => !(R.r0 === to.r && R.r1 === to.r && R.c0 === to.c && R.c1 === to.c)); // Ctrl+click again: unselect
+    else { s.ranges = [...(ctrl ? s.ranges : []), span(rect(to, to))]; s.anchor = to; }
+    s.focus = to; s.mode = mode;
+    paintSel();
+  }
+  const selectAll = () => { const L = lastIdx(); if (L.r < 0) return; tab.sel = { ranges: [{ r0: 0, r1: L.r, c0: 0, c1: L.c }], anchor: { r: 0, c: 0 }, focus: tab.sel.focus || { r: 0, c: 0 }, mode: 'cell' }; paintSel(); };
+  function paintSel() {
+    const r = tab.results[tab.cur]; if (!r || !r.columns.length) return;
+    const f = tab.sel.focus;
+    for (const tr of grid.querySelectorAll('tbody tr[data-ri]')) {
+      const ri = +tr.dataset.ri; let any = false;
+      for (let ci = 0; ci < r.columns.length; ci++) {
+        const td = tr.cells[ci + 1], on = inSel(ri, ci); any = any || on;
+        td.classList.toggle('cs', on); td.classList.toggle('cf', !!f && f.r === ri && f.c === ci);
+      }
+      tr.cells[0].classList.toggle('cs', any);
+    }
+    const cols = new Set(selColIdx());
+    grid.querySelectorAll('thead th[data-c]').forEach(th => th.classList.toggle('cs', cols.has(+th.dataset.c)));
+    // selection summary like DBeaver's status: size, and sum / average when the values are numbers
+    const el = $('.selinfo', pane); if (!el) return;
+    const rows = selRowIdx(), cs = selColIdx();
+    let cells = 0, sum = 0, nums = 0;
+    for (const ri of rows) for (const ci of cs) if (inSel(ri, ci)) {
+      cells++; const v = val(r, tab.view[ri], ci);
+      if (typeof v === 'number' || (typeof v === 'string' && /^\s*-?\d+(\.\d+)?(e[+-]?\d+)?\s*$/i.test(v))) { sum += +v; nums++; }
+    }
+    el.textContent = cells > 1 ? ` · selected: ${rows.length} row(s) × ${cs.length} column(s) = ${cells} cell(s)${nums > 1 ? ` · sum ${+sum.toFixed(6)} · avg ${+(sum / nums).toFixed(6)}` : ''}` : '';
+  }
+  // Tab-separated like DBeaver / Excel. One cell is copied as-is; with several cells, values holding tabs, line breaks
+  // or quotes are quoted so a spreadsheet pastes them into one cell.
+  function selText(headers = false) {
+    const r = tab.results[tab.cur], rows = selRowIdx(), cols = selColIdx(), one = rows.length * cols.length === 1 && !headers;
+    const txt = v => { const s = v === null || v === undefined ? '' : String(v); return !one && /[\t\r\n"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = rows.map(ri => cols.map(ci => inSel(ri, ci) ? txt(val(r, tab.view[ri], ci)) : '').join('\t'));
+    if (headers) lines.unshift(cols.map(ci => txt(r.columns[ci])).join('\t'));
+    return { text: lines.join('\r\n'), rows: rows.length, cols: cols.length, one };
+  }
+  function copySel(headers = false) {
+    if (!tab.results[tab.cur] || !tab.sel.ranges.length) return toast('Select cells first');
+    const s = selText(headers);
+    copyText(s.text, s.one ? 'Copied value' : `Copied ${s.rows} row(s) × ${s.cols} column(s)`);
+  }
+  // scrolls a cell into view (rows outside the rendered window are placed by their computed position)
+  function reveal({ r: ri, c: ci }) {
+    const r = tab.results[tab.cur], head = $('thead', grid).offsetHeight, tr = $(`tbody tr[data-ri="${ri}"]`, grid);
+    const y = tr ? tr.offsetTop : head + ri * rowH, hh = tr ? tr.offsetHeight : rowH;
+    if (y - head < grid.scrollTop) grid.scrollTop = y - head; else if (y + hh > grid.scrollTop + grid.clientHeight) grid.scrollTop = y + hh - grid.clientHeight;
+    const x = rnW() + r.widths.slice(0, ci).reduce((a, b) => a + b, 0), w = r.widths[ci];
+    if (x - rnW() < grid.scrollLeft) grid.scrollLeft = x - rnW(); else if (x + w > grid.scrollLeft + grid.clientWidth) grid.scrollLeft = x + w - grid.clientWidth;
+    renderRows();
+  }
+  const measure = (() => { const c = document.createElement('canvas').getContext('2d'); c.font = '12.5px Consolas, "Cascadia Mono", monospace'; return s => c.measureText(s).width; })();
+  const colWidths = r => r.columns.map((c, ci) => {
+    const plan = r.command === 'EXPLAIN';
+    let w = measure(c) * 1.1 + 44; // bold header + sort arrow + key icon
+    for (let i = 0; i < Math.min(r.rows.length, 200); i++) { const v = r.rows[i][ci]; if (v !== null && v !== undefined) w = Math.max(w, measure(String(v).slice(0, plan ? 400 : 60)) + 20); }
+    return Math.round(Math.min(plan ? 1600 : 360, Math.max(56, w)));
+  });
+
   function drawResults() {
     $('.rtabs', pane).innerHTML = tab.results.map((r, i) => `<span class="rtab ${i === tab.cur ? 'on' : ''}" data-i="${i}" title="${esc(r.sql.slice(0, 300))}\n\nRight-click: pin / close">${r.pinned ? '📌 ' : ''}${r.command === 'EXPLAIN' ? 'Execution plan' : r.columns.length ? `${esc(r.table || 'Result ' + (i + 1))} (${r.rowCount ?? r.rows.length + '+'})` : `Statement ${i + 1}`}<b class="rx" title="Close">×</b></span>`).join('');
-    sortCol = -1; tab.sel = new Set(); tab.anchor = null;
+    sortCol = -1; resetSel();
     const r = tab.results[tab.cur], isTable = !!(r && r.table && !r.inferred && r.columns.length);
     $('.wfilter', pane).hidden = $('.ofilter', pane).hidden = !isTable;
     if (isTable) { $('.wfilter', pane).value = r.where || ''; $('.ofilter', pane).value = r.order || ''; }
-    drawGrid();
+    drawGrid((r && r.scroll) || { top: 0, left: 0 });
     if (r && r.editable === undefined) prepEdit(r).then(() => { if (tab.results[tab.cur] === r) drawGrid(); });
   }
-  function drawGrid() {
-    const r = tab.results[tab.cur]; const g = $('.grid', pane);
+  function drawGrid(pos = { top: grid.scrollTop, left: grid.scrollLeft }) {
+    const r = tab.results[tab.cur], g = grid;
     $('.edits', pane).hidden = !(r && r.editable);
-    if (!r) { g.innerHTML = ''; return; }
+    if (!r) { g.innerHTML = ''; tab.view = []; return; }
     $('[data-x="saveedits"]', pane).disabled = $('[data-x="revert"]', pane).disabled = !hasEdits(r);
-    if (!r.columns.length) { g.innerHTML = `<p style="padding:10px">✔ ${r.affected != null ? `${r.affected} row(s) affected` : esc(r.command || 'OK')} <span class="dim">· ${r.ms} ms</span></p><pre class="out" style="margin:0 10px">${esc(r.sql)}</pre>`; $('.rstatus', pane).textContent = ''; return; }
+    if (!r.columns.length) { tab.view = []; g.innerHTML = `<p style="padding:10px">✔ ${r.affected != null ? `${r.affected} row(s) affected` : esc(r.command || 'OK')} <span class="dim">· ${r.ms} ms</span></p><pre class="out" style="margin:0 10px">${esc(r.sql)}</pre>`; $('.rstatus', pane).textContent = ''; return; }
     const f = $('.rfilter', pane).value.toLowerCase();
     let rows = f ? r.rows.filter(row => row.some(v => v !== null && String(v).toLowerCase().includes(f))) : r.rows.slice();
     if (sortCol >= 0) rows.sort((a, b) => { const x = a[sortCol], y = b[sortCol]; return (x === null) - (y === null) || (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true })) * sortDir; });
-    const ed = r.ed || freshEdits(), added = new Set(ed.added);
+    const ed = r.ed || freshEdits();
     rows = rows.concat(ed.added);
     tab.view = rows;
-    const pk = new Set(r.pk || []);
-    const max = g.classList.contains('wrap') ? 5000 : 300; // wrapped cells show (much) more of long values
-    const cell = (v, cls = '') => v === undefined ? `<td class="def ${cls}">(default)</td>` : v === null ? `<td class="null ${cls}">NULL</td>` : typeof v === 'number' ? `<td class="num ${cls}">${v}</td>` : `<td class="${cls}">${esc(String(v).slice(0, max))}</td>`;
-    g.innerHTML = `<table class="rgrid${r.command === 'EXPLAIN' ? ' plan' : ''}"><thead><tr><th class="rn">#</th>${r.columns.map((c, i) => `<th data-c="${i}" class="${pk.has(c) ? 'pk' : ''}">${esc(c)}${i === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map((row, i) => { const c = ed.changes.get(row); return `<tr class="${ed.deleted.has(row) ? 'del' : ''}${added.has(row) ? ' new' : ''}${tab.sel.has(row) ? ' sel' : ''}"><td class="rn" title="Click to select (Ctrl/Shift for more)">${added.has(row) ? '＋' : i + 1}</td>${row.map((v, ci) => c && ci in c ? cell(c[ci], 'chg') : cell(v)).join('')}</tr>`; }).join('')}</tbody></table>`;
-    const n = ed.changes.size + ed.deleted.size + ed.added.length;
-    $('.rstatus', pane).innerHTML = `${r.rows.length - (rows.length - ed.added.length) ? `${rows.length - ed.added.length} of ` : ''}${r.rows.length} row(s)${r.truncated ? ` — first ${r.rows.length}${r.rowCount != null ? ` of ${r.rowCount}` : ', more on the server'} <button data-x="more" title="Load more rows (raises Max rows)">Fetch more</button>` : ''} · ${r.ms} ms`
-      + (r.editable ? ` · <span title="Double-click a cell to edit">editable</span>${n ? ` · <b>${n} unsaved change(s)</b>` : ''}` : r.table && r.noEditWhy ? ` · read-only: ${esc(r.noEditWhy)}` : '');
+    if (!r.widths) r.widths = colWidths(r);
+    const pk = new Set(r.pk || []), rw = rnW();
+    g.innerHTML = `<table class="rgrid${r.command === 'EXPLAIN' ? ' plan' : ''}" style="width:${rw + r.widths.reduce((a, b) => a + b, 0)}px"><colgroup><col style="width:${rw}px">${r.widths.map(w => `<col style="width:${w}px">`).join('')}</colgroup>
+      <thead><tr><th class="rn" title="Select all (Ctrl+A)">#</th>${r.columns.map((c, i) => `<th data-c="${i}" class="${pk.has(c) ? 'pk' : ''}" title="${esc(c)}&#10;Click: select the column (drag, Shift or Ctrl for more) · arrow: sort · drag the right edge: resize"><span class="so" title="Sort">${i === sortCol ? (sortDir > 0 ? '▲' : '▼') : '⇅'}</span>${esc(c)}<span class="rs"></span></th>`).join('')}</tr></thead><tbody></tbody></table>`;
+    win = '';
+    renderRows(pos.top);
+    g.scrollTop = pos.top; g.scrollLeft = pos.left;
+    const n = ed.changes.size + ed.deleted.size + ed.added.length, shown = rows.length - ed.added.length;
+    $('.rstatus', pane).innerHTML = `${r.rows.length - shown ? `${shown} of ` : ''}${r.rows.length} row(s)${r.truncated ? ` — first ${r.rows.length}${r.rowCount != null ? ` of ${r.rowCount}` : ', more on the server'} <button data-x="more" title="Load 5× more rows (raises Max rows)">Fetch more</button> <button data-x="all" title="Load every row of the result">Fetch all</button>` : ''} · ${r.ms} ms`
+      + (r.editable ? ` · <span title="Double-click, Enter or F2 edits a cell; typing starts editing">editable</span>${n ? ` · <b>${n} unsaved change(s)</b>` : ''}` : r.table && r.noEditWhy ? ` · read-only: ${esc(r.noEditWhy)}` : '')
+      + '<span class="selinfo"></span>';
+    paintSel();
   }
+  function renderRows(st = grid.scrollTop) {
+    const r = tab.results[tab.cur], tb = $('tbody', grid); if (!r || !tb || !r.columns.length) return;
+    // ponytail: wrapped cells have uneven heights, so wrap mode (and plans) render every row; virtualize by measured heights if wrapped views of huge results matter
+    const n = tab.view.length, all = grid.classList.contains('wrap') || r.command === 'EXPLAIN';
+    const a = all ? 0 : Math.max(0, Math.floor(st / rowH) - 30), b = all ? n : Math.min(n, a + Math.ceil((grid.clientHeight || 800) / rowH) + 60);
+    if (win === `${a}:${b}`) return;
+    win = `${a}:${b}`;
+    const ed = r.ed || freshEdits(), added = new Set(ed.added), max = all ? 5000 : 1000, nc = r.columns.length + 1;
+    const cell = (v, cls = '') => v === undefined ? `<td class="def ${cls}">(default)</td>` : v === null ? `<td class="null ${cls}">NULL</td>` : typeof v === 'number' ? `<td class="num ${cls}">${v}</td>`
+      : `<td class="${cls}">${esc(String(v).length > max ? String(v).slice(0, max) + '…' : String(v))}</td>`;
+    const pad = hh => hh > 0 ? `<tr class="pad"><td colspan="${nc}" style="height:${hh}px"></td></tr>` : '';
+    let html = pad(a * rowH);
+    for (let i = a; i < b; i++) {
+      const row = tab.view[i], c = ed.changes.get(row);
+      html += `<tr data-ri="${i}" class="${ed.deleted.has(row) ? 'del' : ''}${added.has(row) ? ' new' : ''}"><td class="rn">${added.has(row) ? '＋' : i + 1}</td>${row.map((v, ci) => c && ci in c ? cell(c[ci], 'chg') : cell(v)).join('')}</tr>`;
+    }
+    tb.innerHTML = html + pad((n - b) * rowH);
+    const first = !all && $('tr[data-ri]', tb), hh = first && first.getBoundingClientRect().height;
+    if (hh && Math.abs(hh - rowH) > 0.01) { rowH = hh; win = ''; return renderRows(st); }
+    paintSel();
+  }
+  grid.addEventListener('scroll', () => requestAnimationFrame(() => renderRows()));
+
+  // mouse: click / Shift+click / Ctrl+click / drag on cells, on row numbers (whole rows) or on headers (whole columns); # = all
+  grid.addEventListener('mousedown', e => {
+    const r = tab.results[tab.cur];
+    if (e.button !== 0 || !r || !r.columns.length || e.target.closest('td.ed')) return;
+    const th = e.target.closest('th'), td = e.target.closest('td');
+    if (th && e.target.classList.contains('rs')) { const c = +th.dataset.c; drag = { mode: 'resize', c, x: e.clientX, w: r.widths[c] }; e.preventDefault(); return; }
+    if (th && e.target.classList.contains('so')) return; // sort arrow: handled on click
+    const f = tab.sel.focus || { r: 0, c: 0 };
+    let pos, mode = 'cell';
+    if (th && th.classList.contains('rn')) { e.preventDefault(); grid.focus({ preventScroll: true }); return selectAll(); }
+    if (th) { pos = { r: f.r, c: +th.dataset.c }; mode = 'col'; }
+    else if (td && td.parentNode.dataset.ri) { const ri = +td.parentNode.dataset.ri; if (td.classList.contains('rn')) { pos = { r: ri, c: f.c }; mode = 'row'; } else pos = { r: ri, c: td.cellIndex - 1 }; }
+    else return;
+    e.preventDefault(); // no text selection while dragging
+    const open = $('td.ed input', grid); if (open) open.blur(); // commit an inline edit first
+    grid.focus({ preventScroll: true });
+    select(pos, { shift: e.shiftKey, ctrl: e.ctrlKey, mode });
+    drag = { mode };
+  });
+  window.addEventListener('mousemove', e => {
+    if (!drag || !pane.isConnected) return;
+    const r = tab.results[tab.cur]; if (!r || !r.widths) return;
+    if (drag.mode === 'resize') {
+      r.widths[drag.c] = Math.max(30, Math.round(drag.w + e.clientX - drag.x));
+      const t = $('table', grid); t.querySelectorAll('col')[drag.c + 1].style.width = r.widths[drag.c] + 'px';
+      t.style.width = rnW() + r.widths.reduce((a, b) => a + b, 0) + 'px';
+      return;
+    }
+    const b = grid.getBoundingClientRect(), head = $('thead', grid).offsetHeight;
+    if (drag.mode !== 'col') { if (e.clientY > b.bottom - 6) grid.scrollTop += rowH; else if (e.clientY < b.top + head) grid.scrollTop -= rowH; }
+    if (drag.mode !== 'row') { if (e.clientX > b.right - 6) grid.scrollLeft += 40; else if (e.clientX < b.left + rnW()) grid.scrollLeft -= 40; }
+    renderRows();
+    const x = drag.mode === 'row' ? b.left + 4 : Math.min(Math.max(e.clientX, b.left + rnW() + 2), b.right - 16);
+    const y = drag.mode === 'col' ? b.top + head / 2 : Math.min(Math.max(e.clientY, b.top + head + 2), b.bottom - 16);
+    const el = document.elementFromPoint(x, y), cellEl = el && el.closest('td, th');
+    if (!cellEl || !grid.contains(cellEl)) return;
+    const f = tab.sel.focus || { r: 0, c: 0 };
+    if (drag.mode === 'col') { if (cellEl.dataset.c && +cellEl.dataset.c !== f.c) select({ r: f.r, c: +cellEl.dataset.c }, { shift: true, mode: 'col' }); return; }
+    const ri = cellEl.parentNode.dataset.ri; if (ri === undefined) return;
+    if (drag.mode === 'row') { if (+ri !== f.r) select({ r: +ri, c: f.c }, { shift: true, mode: 'row' }); }
+    else if (cellEl.cellIndex > 0 && (f.r !== +ri || f.c !== cellEl.cellIndex - 1)) select({ r: +ri, c: cellEl.cellIndex - 1 }, { shift: true });
+  });
+  window.addEventListener('mouseup', () => { drag = null; });
+  grid.addEventListener('click', e => {
+    const so = e.target.closest('th .so'); if (!so) return;
+    const c = +so.parentNode.dataset.c; sortDir = c === sortCol ? -sortDir : 1; sortCol = c;
+    resetSel(); drawGrid();
+  });
+  // keyboard (DBeaver): arrows / Tab / Home / End / PgUp / PgDn move (Shift extends, Ctrl jumps to the edge),
+  // Ctrl+A all, Ctrl+C copy, Ctrl+Shift+C copy with column names, Enter / F2 edit, Shift+Enter view value,
+  // Delete marks the selected rows for deletion, typing starts editing the cell
+  grid.addEventListener('keydown', e => {
+    if (e.target !== grid) return;
+    const r = tab.results[tab.cur]; if (!r || !r.columns.length || !tab.view.length) return;
+    const L = lastIdx(), f = tab.sel.focus || { r: 0, c: 0 }, k = e.key, ctrl = e.ctrlKey || e.metaKey;
+    const page = Math.max(1, Math.floor(grid.clientHeight / rowH) - 2);
+    const moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1], PageUp: [-page, 0], PageDown: [page, 0] };
+    let to = null;
+    if (moves[k]) { const [dr, dc] = moves[k]; to = ctrl && !k.startsWith('Page') ? { r: dr ? (dr < 0 ? 0 : L.r) : f.r, c: dc ? (dc < 0 ? 0 : L.c) : f.c } : { r: f.r + dr, c: f.c + dc }; }
+    else if (k === 'Home') to = { r: ctrl ? 0 : f.r, c: 0 };
+    else if (k === 'End') to = { r: ctrl ? L.r : f.r, c: L.c };
+    else if (k === 'Tab') to = { r: f.r, c: f.c + (e.shiftKey ? -1 : 1) };
+    if (to) {
+      e.preventDefault();
+      to = { r: Math.max(0, Math.min(L.r, to.r)), c: Math.max(0, Math.min(L.c, to.c)) };
+      const ext = e.shiftKey && k !== 'Tab';
+      select(to, { shift: ext, mode: ext ? tab.sel.mode : 'cell' });
+      return reveal(to);
+    }
+    const key = k.toLowerCase();
+    if (ctrl && key === 'a') { e.preventDefault(); return selectAll(); }
+    if (ctrl && key === 'c') { e.preventDefault(); return copySel(e.shiftKey); }
+    if (!tab.sel.focus) return;
+    if (k === 'Enter' || k === 'F2') { e.preventDefault(); if (e.shiftKey || !editCell(f.r, f.c)) viewValue(r, f.r, f.c); return; }
+    if (k === 'Delete' && r.editable) { e.preventDefault(); return deleteRows(r, selRows()); }
+    if (k === 'Escape') { tab.sel.ranges = [rect(f, f)]; tab.sel.anchor = f; return paintSel(); }
+    if (k.length === 1 && !ctrl && !e.altKey && r.editable && editCell(f.r, f.c, k)) e.preventDefault();
+  });
 
   // ---- editing ----
-  const at = td => { const tr = td.parentNode; return { ri: [...tr.parentNode.children].indexOf(tr), ci: [...tr.children].indexOf(td) - 1 }; };
+  const at = td => ({ ri: +td.parentNode.dataset.ri, ci: td.cellIndex - 1 });
   function setCell(r, row, ci, v) {
     if (r.ed.added.includes(row)) row[ci] = v;
     else {
@@ -758,20 +975,24 @@ async function openDb(d, database, script = null) {
     }
     drawGrid();
   }
-  function editCell(ri, ci) {
+  // typed = the key that started editing (replaces the value, like DBeaver / Excel)
+  function editCell(ri, ci, typed) {
     const r = tab.results[tab.cur], row = tab.view[ri];
-    if (!r || !r.editable || !row || !r.colEditable[ci] || r.ed.deleted.has(row)) return false;
-    const td = $('.grid tbody', pane).children[ri].children[ci + 1];
+    if (!r || !r.editable || !row || !r.colEditable || !r.colEditable[ci] || r.ed.deleted.has(row)) return false;
+    tab.sel.focus = { r: ri, c: ci };
+    if (!$(`tbody tr[data-ri="${ri}"]`, grid)) reveal({ r: ri, c: ci });
+    const td = $(`tbody tr[data-ri="${ri}"]`, grid).cells[ci + 1];
     const cur = val(r, row, ci);
     td.classList.add('ed');
     const isDate = /^date$/i.test(r.colTypes[ci] || ''); // plain DATE columns get a date picker (no timezone involved)
     td.innerHTML = `<input${isDate ? ' type="date"' : ''}>`;
     const inp = td.firstChild;
-    inp.value = cur === null || cur === undefined ? '' : isDate ? String(cur).slice(0, 10) : String(cur);
-    inp.focus(); inp.select();
+    inp.value = typed !== undefined && !isDate ? typed : cur === null || cur === undefined ? '' : isDate ? String(cur).slice(0, 10) : String(cur);
+    inp.focus(); if (typed === undefined || isDate) inp.select();
     let done = false;
-    const finish = ok => {
+    const finish = (ok, back = false) => {
       if (done) return; done = true;
+      if (back) setTimeout(() => grid.focus({ preventScroll: true })); // keyboard finish: keep working in the grid
       if (!ok) return drawGrid();
       let v = inp.value;
       if (v === '' && (cur === null || cur === undefined)) v = cur; // left empty: keep NULL / default
@@ -780,27 +1001,29 @@ async function openDb(d, database, script = null) {
     };
     inp.onkeydown = e => {
       e.stopPropagation();
-      if (e.key === 'Enter') finish(true);
-      else if (e.key === 'Escape') finish(false);
+      if (e.key === 'Enter') finish(true, true);
+      else if (e.key === 'Escape') finish(false, true);
       else if (e.key === 'Tab') { e.preventDefault(); finish(true); let n = ci + (e.shiftKey ? -1 : 1); while (n >= 0 && n < r.columns.length && !r.colEditable[n]) n += e.shiftKey ? -1 : 1; editCell(ri, n); }
     };
     inp.onblur = () => finish(true);
     return true;
   }
-  const targetRows = (r, row) => { const sel = tab.sel.size ? [...tab.sel] : []; return row && !tab.sel.has(row) ? [row] : sel; };
+  // rows an action applies to: the selected rows when the clicked row is one of them, otherwise just that row
+  const targetRows = (r, row) => { const sel = selRows(); return row && !sel.includes(row) ? [row] : sel; };
   function deleteRows(r, rows) {
-    if (!rows.length) return toast('Select rows first (click the row numbers)');
+    if (!rows.length) return toast('Select rows first (click a cell or the row numbers)');
+    let removed = false;
     for (const row of rows) {
-      if (r.ed.added.includes(row)) r.ed.added = r.ed.added.filter(x => x !== row);
+      if (r.ed.added.includes(row)) { r.ed.added = r.ed.added.filter(x => x !== row); removed = true; }
       else if (r.ed.deleted.has(row)) r.ed.deleted.delete(row);
       else r.ed.deleted.add(row);
     }
-    tab.sel = new Set(); drawGrid();
+    if (removed) resetSel(); // new rows were dropped: row positions changed
+    drawGrid();
   }
   function addRow(r, from = null) {
     const row = r.columns.map((c, i) => from && !(r.pk || []).includes(c) ? val(r, from, i) : undefined);
     r.ed.added.push(row); drawGrid();
-    const g = $('.grid', pane); g.scrollTop = g.scrollHeight;
     const first = r.colEditable.findIndex(Boolean);
     if (first >= 0) editCell(tab.view.length - 1, first);
   }
@@ -824,11 +1047,13 @@ async function openDb(d, database, script = null) {
       await run(r.sql, r.inferred ? {} : { table: r.table, schema: r.schema, where: r.where, order: r.order });
     } catch (e) { toast(e.message, 'bad'); refreshTx(); }
   }
-  async function fetchMore() {
+  // Fetch more: 5× the rows (raises Max rows). Fetch all: every row, this once.
+  async function fetchMore(all = false) {
     const r = tab.results[tab.cur], lim = $('.lim', pane);
-    lim.value = Math.max(+lim.value || 200, r.rows.length) * 5;
-    if (r.table && !r.inferred) run(await api.call('db:selectSql', SQLX, r.schema, r.table, +lim.value, r.where, r.order), { table: r.table, schema: r.schema, where: r.where, order: r.order });
-    else run(r.sql);
+    const limit = all ? 2147483647 : Math.max(+lim.value || 200, r.rows.length) * 5;
+    if (!all) lim.value = limit;
+    if (r.table && !r.inferred) run(await api.call('db:selectSql', SQLX, r.schema, r.table, limit, r.where, r.order), { table: r.table, schema: r.schema, where: r.where, order: r.order, limit });
+    else run(r.sql, { limit });
   }
   async function applyFilter() {
     const r = tab.results[tab.cur]; if (!r || !r.table) return;
@@ -849,6 +1074,7 @@ async function openDb(d, database, script = null) {
     const t = e.target.closest('.rtab'); if (!t) return;
     const r = tab.results[+t.dataset.i];
     if (e.target.classList.contains('rx')) return closeResults(x => x !== r);
+    const was = tab.results[tab.cur]; if (was) was.scroll = { top: grid.scrollTop, left: grid.scrollLeft }; // come back to the same place
     tab.cur = +t.dataset.i; drawResults();
   };
   $('.rtabs', pane).oncontextmenu = e => {
@@ -862,18 +1088,8 @@ async function openDb(d, database, script = null) {
       ['Copy SQL', () => copyText(r.sql)],
     ]);
   };
-  $('.rfilter', pane).oninput = drawGrid;
-  $('.rstatus', pane).onclick = e => { if (e.target.dataset.x === 'more') fetchMore(); };
-  $('.grid', pane).addEventListener('click', e => {
-    const th = e.target.closest('th[data-c]');
-    if (th) { const c = +th.dataset.c; sortDir = c === sortCol ? -sortDir : 1; sortCol = c; return drawGrid(); }
-    const rn = e.target.closest('td.rn'); if (!rn) return;
-    const ri = at(rn).ri, row = tab.view[ri];
-    if (e.shiftKey && tab.anchor !== null) tab.sel = new Set(tab.view.slice(Math.min(tab.anchor, ri), Math.max(tab.anchor, ri) + 1));
-    else if (e.ctrlKey) tab.sel.has(row) ? tab.sel.delete(row) : tab.sel.add(row);
-    else tab.sel = new Set(tab.sel.size === 1 && tab.sel.has(row) ? [] : [row]);
-    tab.anchor = ri; drawGrid();
-  });
+  $('.rfilter', pane).oninput = () => { resetSel(); drawGrid({ top: 0, left: grid.scrollLeft }); };
+  $('.rstatus', pane).onclick = e => { if (e.target.dataset.x === 'more') fetchMore(); if (e.target.dataset.x === 'all') fetchMore(true); };
   const sqlLit = v => typeof v === 'number' ? String(v) : `'${(SQLX === 'mysql' ? String(v).replace(/\\/g, '\\\\') : String(v)).replace(/'/g, "''")}'`;
   // DBeaver "Navigate to referenced row": opens the parent row in a new result tab
   async function openRef(r, row, fk) {
@@ -905,87 +1121,129 @@ async function openDb(d, database, script = null) {
     modal(`${r.columns[ci]} — row ${ri + 1}`, h(`<pre class="out" style="max-height:60vh">${esc(txt)}</pre>`), [{ label: 'Copy', onClick: () => { navigator.clipboard.writeText(txt); toast('Copied', 'ok'); return false; } }, { label: 'Close', cls: 'primary' }]);
   }
   $('.grid', pane).addEventListener('dblclick', e => {
-    const td = e.target.closest('td'); if (!td || td.classList.contains('rn') || td.classList.contains('ed')) return;
+    const td = e.target.closest('td'); if (!td || td.parentNode.dataset.ri === undefined || td.classList.contains('rn') || td.classList.contains('ed')) return;
     const { ri, ci } = at(td), r = tab.results[tab.cur];
     if (!editCell(ri, ci)) viewValue(r, ri, ci);
   });
+  // the selected cells as a table: selected columns × rows that have a selected cell
+  const selTable = () => {
+    const r = tab.results[tab.cur], cols = selColIdx();
+    return { columns: cols.map(i => r.columns[i]), rows: selRowIdx().map(ri => cols.map(ci => inSel(ri, ci) ? val(r, tab.view[ri], ci) ?? null : null)) };
+  };
+  let textFormats = null;
+  // DBeaver "Advanced copy": the selection in any text format
+  async function copyAs() {
+    const r = tab.results[tab.cur]; if (!r || !tab.sel.ranges.length) return toast('Select cells first');
+    textFormats = textFormats || (await api.call('db:exportFormats')).filter(x => x.text);
+    const o = await ask('Copy selection as', [['fmt', 'Format', 'select', 'csv', textFormats.map(x => [x.id, x.label])], ['header', 'Include column names', 'check', true], ['nullText', 'Write NULL as (empty = nothing)']], {}, 'Copy');
+    if (!o) return;
+    const t = selTable();
+    copyText(await api.call('db:exportText', o.fmt, t.columns, t.rows, r.table, SQLX, o), `Copied ${t.rows.length} row(s) × ${t.columns.length} column(s) as ${o.fmt.toUpperCase()}`);
+  }
+  // widest value of a column (all loaded rows), capped so one huge value can't make the column unusable
+  const fitWidth = (r, c) => Math.round(Math.min(1200, Math.max(56, measure(r.columns[c]) * 1.1 + 44,
+    ...tab.view.slice(0, 5000).map(row => { const v = val(r, row, c); return v === null || v === undefined ? 0 : measure(String(v).slice(0, 200)) + 20; }))));
   $('.grid', pane).addEventListener('contextmenu', e => {
-    const r = tab.results[tab.cur]; if (!r || !r.columns.length) return;
+    const r = tab.results[tab.cur]; if (!r || !r.columns.length || !tab.view.length) return;
     const th = e.target.closest('th[data-c]');
     if (th) {
       e.preventDefault(); const c = +th.dataset.c;
-      return ctxMenu(e, [['Sort ascending', () => { sortCol = c; sortDir = 1; drawGrid(); }], ['Sort descending', () => { sortCol = c; sortDir = -1; drawGrid(); }], ['Copy column name', () => copyText(r.columns[c])],
-        ['Copy column values', () => copyText(tab.view.map(row => val(r, row, c) ?? '').join('\n'), `Copied ${tab.view.length} values`)],
-        ...(r.table && !r.inferred ? [['Filter on the server: ORDER BY this column', () => { $('.ofilter', pane).value = `${quote(r.columns[c])} ${sortCol === c && sortDir > 0 ? 'DESC' : 'ASC'}`; applyFilter(); }]] : [])]);
+      if (!selColIdx().includes(c) || tab.sel.mode !== 'col') select({ r: (tab.sel.focus || { r: 0 }).r, c }, { mode: 'col' });
+      return ctxMenu(e, [['Sort ascending', () => { sortCol = c; sortDir = 1; resetSel(); drawGrid(); }], ['Sort descending', () => { sortCol = c; sortDir = -1; resetSel(); drawGrid(); }], ['Clear sort', () => { sortCol = -1; resetSel(); drawGrid(); }, sortCol < 0], '-',
+        ['Copy column values (Ctrl+C)', () => copySel()], ['Copy with column name (Ctrl+Shift+C)', () => copySel(true)], ['Copy as… (CSV, JSON, Markdown, SQL, HTML, XML, TXT)', copyAs], ['Copy column name', () => copyText(r.columns[c])],
+        ['Fit column width to its values', () => { r.widths[c] = fitWidth(r, c); drawGrid(); }],
+        ...(r.table && !r.inferred ? [['Filter on the server: ORDER BY this column', () => { $('.ofilter', pane).value = `${quote(r.columns[c])} ${sortCol === c && sortDir > 0 ? 'DESC' : 'ASC'}`; applyFilter(); }]] : []),
+        '-', ['⤓ Export…', () => exportResult(r)]]);
     }
-    const td = e.target.closest('td'); if (!td) return;
+    const td = e.target.closest('td'); if (!td || td.parentNode.dataset.ri === undefined) return;
     e.preventDefault();
     const { ri, ci: ci0 } = at(td), row = tab.view[ri], ci = Math.max(0, ci0);
+    // right-click outside the selection selects that cell (or row), like DBeaver
+    if (ci0 < 0) { if (!selRowIdx().includes(ri)) select({ r: ri, c: ci }, { mode: 'row' }); }
+    else if (!inSel(ri, ci)) select({ r: ri, c: ci });
     const v = val(r, row, ci), col = r.columns[ci];
     const lit = v === null || v === undefined ? 'NULL' : sqlLit(v);
     const fk = (r.fks || []).find(f => f.columns.includes(col) && f.columns.every(c => r.columns.includes(c)));
-    const rowObj = () => Object.fromEntries(r.columns.map((c, i) => [c, val(r, row, i) ?? null]));
+    const nRows = targetRows(r, row).length;
     const ed = r.editable ? [
-      ['✎ Edit cell', () => editCell(ri, ci), !r.colEditable[ci]],
+      ['✎ Edit cell (Enter / F2)', () => editCell(ri, ci), !r.colEditable[ci]],
       ['✎ Edit value in a large editor (text / JSON)…', () => bigEditor(r, ri, ci), !r.colEditable[ci]],
       ['Set NULL', () => setCell(r, row, ci, null), !r.colEditable[ci]],
       ['＋ Add row', () => addRow(r)],
       ['⧉ Duplicate row', () => addRow(r, row)],
-      [r.ed.deleted.has(row) ? '↶ Undelete row' : `− Delete row${targetRows(r, row).length > 1 ? `s (${targetRows(r, row).length})` : ''}`, () => deleteRows(r, targetRows(r, row))],
+      [r.ed.deleted.has(row) ? '↶ Undelete row' : `− Delete row${nRows > 1 ? `s (${nRows})` : ''} (Delete)`, () => deleteRows(r, targetRows(r, row))],
       ['Preview save SQL…', async () => { const s = await editSqlOf(r); modal('Changes to save', h(`<pre class="out" style="max-height:60vh">${esc(s.join(';\n') + (s.length ? ';' : '-- no changes'))}</pre>`), [{ label: 'Close', cls: 'primary' }], 'wide'); }, !hasEdits(r)],
       '-'] : [];
     ctxMenu(e, [
       ...ed,
       ...(fk ? [[`↗ Open referenced row in ${fk.refTable}`, () => openRef(r, row, fk)], '-'] : []),
-      ['View value…', () => viewValue(r, ri, ci)],
-      ['Copy value', () => copyText(v === null || v === undefined ? '' : v)],
-      ['Copy row (tab-separated)', () => copyText(r.columns.map((_, i) => val(r, row, i) ?? '').join('\t'))],
-      ['Copy row as JSON', () => copyText(JSON.stringify(rowObj(), null, 2))],
-      ['Copy row as INSERT', async () => copyText((await api.call('db:editSql', SQLX, r.schema, r.table || 'my_table', [{ type: 'insert', values: rowObj() }]))[0] + ';')],
+      ['View value… (Shift+Enter)', () => viewValue(r, ri, ci)],
+      ['Copy (Ctrl+C)', () => copySel()],
+      ['Copy with column names (Ctrl+Shift+C)', () => copySel(true)],
+      ['Copy as… (CSV, JSON, Markdown, SQL, HTML, XML, TXT)', copyAs],
       ['Copy column name', () => copyText(col)],
+      ['Select all (Ctrl+A)', selectAll],
       '-',
-      ['Find this value in the grid', () => { $('.rfilter', pane).value = v === null || v === undefined ? '' : String(v); drawGrid(); }],
+      ['Find this value in the grid', () => { $('.rfilter', pane).value = v === null || v === undefined ? '' : String(v); resetSel(); drawGrid({ top: 0, left: grid.scrollLeft }); }],
       ...(r.table && !r.inferred ? [['Filter on the server: WHERE column = value', () => { $('.wfilter', pane).value = `${quote(col)} ${v === null ? 'IS NULL' : '= ' + lit}`; applyFilter(); }]] : []),
       ['Insert WHERE condition into editor', () => { cm.replaceSelection(`${quote(col)} ${v === null ? 'IS NULL' : '= ' + lit}`); cm.focus(); }],
       '-',
-      ['⤓ Export…', () => exportResult(r, tab.view.filter(x => !r.ed || !r.ed.added.includes(x)))],
+      ['⤓ Export…', () => exportResult(r)],
     ]);
   });
   $('.rbar', pane).addEventListener('click', async e => {
     const x = e.target.dataset.x; if (!x) return;
     const r = tab.results[tab.cur]; if (!r || !r.columns.length) return toast('No result set');
     if (x === 'addrow') return addRow(r);
-    if (x === 'delrow') return deleteRows(r, [...tab.sel]);
+    if (x === 'delrow') return deleteRows(r, selRows());
     if (x === 'saveedits') return saveEdits();
     if (x === 'revert') { r.ed = freshEdits(); return drawGrid(); }
-    const rows = (tab.view || r.rows).filter(row => !r.ed || !r.ed.added.includes(row));
-    if (x === 'copy') { navigator.clipboard.writeText([r.columns, ...rows].map(row => row.map(v => v === null ? '' : String(v).replace(/[\t\n]/g, ' ')).join('\t')).join('\n')); return toast(`Copied ${rows.length} rows (TSV)`, 'ok'); }
-    if (x === 'export') exportResult(r, rows);
+    if (x === 'copy') {
+      if (selRowIdx().length * selColIdx().length > 1) return copySel(true);
+      const rows = tab.view.filter(row => !r.ed || !r.ed.added.includes(row));
+      return copyText(await api.call('db:exportText', 'tsv', r.columns, rows, r.table, SQLX, {}), `Copied ${rows.length} rows with column names`);
+    }
+    if (x === 'export') exportResult(r);
   });
 
-  // Export: rows shown in the grid, or re-run the query for the first N / all rows (read queries only).
-  async function exportResult(r, shown) {
-    const filtered = shown.length !== r.rows.length;
+  // Export (DBeaver's data transfer): rows in the grid, the selected cells, or re-run the query for the first N / all
+  // rows (read queries only, streamed straight to the file).
+  async function exportResult(r) {
+    const shown = tab.view.filter(x => !r.ed || !r.ed.added.includes(x));
+    const filtered = shown.length !== r.rows.length || sortCol >= 0;
+    const nr = selRowIdx().length, nc = selColIdx().length;
+    const formats = await api.call('db:exportFormats');
     const o = await ask('Export result', [
-      ['fmt', 'Format', 'select', 'csv', [['csv', 'CSV'], ['json', 'JSON'], ['sql', 'SQL INSERT statements']]],
-      ['rows', 'Rows', 'select', r.truncated ? 'all' : 'shown', [
-        ['shown', `Rows shown in the grid (${shown.length}${filtered ? ', filtered/sorted' : ''})`],
+      ['fmt', 'Format', 'select', 'csv', formats.map(x => [x.id, x.label])],
+      ['rows', 'Rows', 'select', r.truncated || r.clipped ? 'all' : nr * nc > 1 ? 'sel' : 'shown', [
+        ['shown', `Rows shown in the grid (${shown.length}${filtered ? ', filtered/sorted' : ''})${r.clipped ? ' — long binary values are cut here' : ''}`],
+        ...(nr * nc > 1 ? [['sel', `Selected cells only (${nr} rows × ${nc} columns)`]] : []),
         ['first', 'First N rows (runs the query again)'],
         ['all', 'All rows (runs the query again, no limit)']]],
       ['n', 'N (for "First N rows")', 'number', 10000],
-      ['heading', r.truncated ? `The grid shows the first ${r.rows.length} rows because of "Max rows" (the rest was not downloaded). Re-running exports more, streamed straight to the file.` : 'Re-running ignores the grid filter and sort; it exports the query result.'],
+      ['heading', 'Options'],
+      ['header', 'Include column names', 'check', true],
+      ['delimiter', 'CSV delimiter', 'select', ',', [[',', 'Comma ,'], [';', 'Semicolon ;'], ['\t', 'Tab'], ['|', 'Pipe |']]],
+      ['nullText', 'Write NULL as (CSV / TSV / TXT / Markdown / HTML; empty = nothing)'],
+      ['bom', 'Start with a UTF-8 BOM (helps Excel open CSV / TSV / TXT with accents correctly)', 'check'],
+      ['heading', r.truncated ? `The grid holds the first ${r.rows.length} rows because of "Max rows" (the rest was not downloaded). "All rows" exports everything, streamed straight to the file.` : 'Re-running ignores the grid filter and sort; it exports the query result.'],
     ], {}, 'Export');
     if (!o) return;
+    const opts = { header: o.header, delimiter: o.delimiter, nullText: o.nullText, bom: o.bom };
     try {
-      if (o.rows === 'shown') { const p = await api.call('db:export', o.fmt, r.columns, shown, r.table, SQLX); if (p) toast(`Exported ${shown.length} rows to ${p}`, 'ok'); return; }
-      const limit = o.rows === 'all' ? 2147483647 : Math.max(1, +o.n || 10000);
-      // a table data view was generated with LIMIT 200 — regenerate it with the requested limit
-      const sql = r.table && /^SELECT (TOP \d+ )?\* FROM /i.test(r.sql) ? await api.call('db:selectSql', SQLX, r.schema, r.table, limit) : r.sql;
+      let res;
       $('.rstatus', pane).textContent = 'Exporting…';
-      const res = await api.call('db:exportQuery', tab.connId, sql, limit, o.fmt, r.table, SQLX);
-      $('.rstatus', pane).textContent = '';
-      if (res) toast(`Exported ${res.rows} rows to ${res.file}`, 'ok');
-    } catch (e) { $('.rstatus', pane).textContent = ''; toast(e.message, 'bad'); }
+      if (o.rows === 'shown') res = await api.call('db:export', o.fmt, r.columns, shown, r.table, SQLX, opts);
+      else if (o.rows === 'sel') { const t = selTable(); res = await api.call('db:export', o.fmt, t.columns, t.rows, r.table, SQLX, opts); }
+      else {
+        const limit = o.rows === 'all' ? 2147483647 : Math.max(1, +o.n || 10000);
+        // a table data view was generated with a row limit: regenerate it with the requested one, keeping its WHERE / ORDER BY
+        const sql = r.table && !r.inferred ? await api.call('db:selectSql', SQLX, r.schema, r.table, limit, r.where, r.order) : r.sql;
+        res = await api.call('db:exportQuery', tab.connId, sql, limit, o.fmt, r.table, SQLX, opts);
+      }
+      drawGrid();
+      if (res) toast(`Exported ${res.rows} rows to ${res.file}${res.more ? ' (more rows exist: raise N)' : ''}`, 'ok');
+    } catch (e) { drawGrid(); toast(e.message, 'bad'); }
   }
   $('.edbar', pane).addEventListener('click', async e => {
     const a = e.target.closest('button') && e.target.closest('button').dataset.a; if (!a) return;

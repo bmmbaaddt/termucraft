@@ -179,23 +179,36 @@ kbd { background: var(--bg3); border: 1px solid var(--line); border-radius: 3px;
 .rtab.on { background: var(--bg); box-shadow: inset 0 2px var(--accent); }
 .rbar { display: flex; gap: 4px; padding: 4px 6px; align-items: center; }
 .rbar button { padding: 2px 8px; font-size: 12px; }
-.grid { flex: 1; overflow: auto; }
+.grid { flex: 1; overflow: auto; position: relative; outline: none; }
 table.rgrid { border-collapse: collapse; font: 12.5px Consolas, "Cascadia Mono", monospace; }
+.grid > table.rgrid { table-layout: fixed; user-select: none; }
+.grid > .rgrid tbody tr[data-ri] { height: 24px; }
+.grid > .rgrid tr.pad td { padding: 0; border: 0; }
+.grid > .rgrid th, .grid > .rgrid td, .grid.wrap > table.rgrid td:not(.rn) { max-width: none; }
 .rgrid th, .rgrid td { border: 1px solid var(--line); padding: 3px 8px; white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
-.rgrid th { position: sticky; top: 0; background: var(--bg3); cursor: pointer; font-weight: 600; z-index: 1; }
+.rgrid th { position: sticky; top: 0; background: var(--bg3); cursor: default; font-weight: 600; z-index: 2; }
 .rgrid td.num { text-align: right; color: #7dd3fc; }
 .rgrid td.null { color: var(--dim); font-style: italic; }
 .rgrid .rn { color: var(--dim); background: var(--bg2); text-align: right; }
+.grid > .rgrid .rn { position: sticky; left: 0; z-index: 1; cursor: e-resize; }
+.grid > .rgrid th.rn { z-index: 3; cursor: se-resize; }
+.grid > .rgrid th[data-c] { cursor: s-resize; }
+.rgrid th .so { color: var(--dim); margin-right: 5px; cursor: pointer; font-size: 10px; }
+.rgrid th .so:hover { color: var(--accent); }
+.rgrid th .rs { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 1; }
 .rgrid tbody tr:hover td { background: var(--bg3); }
 .rstatus { padding: 3px 8px; font-size: 12px; border-top: 1px solid var(--line); }
 /* DBeaver-style grid editing */
 .rgrid td.chg { background: rgba(234, 179, 8, .22) !important; }
 .rgrid tr.new td:not(.rn) { background: rgba(34, 197, 94, .16) !important; }
 .rgrid tr.del td:not(.rn) { text-decoration: line-through; opacity: .55; background: rgba(239, 68, 68, .14) !important; }
-.rgrid tr.sel td.rn { background: var(--accent); color: #fff; }
+/* selection (cells, rows, columns) and the focused cell */
+.rgrid tbody tr td.cs:not(.rn) { background: color-mix(in srgb, var(--accent) 30%, var(--bg)) !important; }
+.rgrid td.cf { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rgrid .rn.cs, .rgrid th.cs { background: color-mix(in srgb, var(--accent) 55%, var(--bg3)); color: #fff; }
 .rgrid td.def { color: var(--dim); font-style: italic; }
 .rgrid td.ed { padding: 0; }
-.rgrid td.ed input { width: 100%; min-width: 120px; border: 0; border-radius: 0; padding: 3px 6px; font: inherit; outline: 2px solid var(--accent); }
+.rgrid td.ed input { width: 100%; box-sizing: border-box; user-select: text; border: 0; border-radius: 0; padding: 3px 6px; font: inherit; outline: 2px solid var(--accent); }
 .rgrid.plan td { white-space: pre; max-width: none; }
 .rgrid th.pk::before { content: "🔑 "; font-size: 10px; }
 .rbar .wfilter, .rbar .ofilter { font-family: Consolas, monospace; font-size: 12px; }
@@ -246,3 +259,4 @@ body.dragging { user-select: none; }
 .dbpane .edbar { flex-wrap: wrap; row-gap: 4px; }
 .dbpane .edbar > * { white-space: nowrap; flex-shrink: 0; }
 .dbpane .edbar .grow { flex: 1 0 0; }
+.tree .hit { background: color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 4px; }

@@ -160,10 +160,16 @@ async function openPostgres(cfg) {
   return {
     run,
     schema: async () => tables(
-      await c.query(`select table_schema, table_name, table_type from information_schema.tables where table_schema not in ${SYS.postgres} and table_schema not like 'pg_toast%' order by 1,2`),
-      await c.query(`select table_schema, table_name, column_name, data_type, is_nullable from information_schema.columns where table_schema not in ${SYS.postgres} order by table_schema, table_name, ordinal_position`), r => r.rows),
+      await c.query(`select table_schema::text, table_name::text, table_type::text from information_schema.tables where table_schema not in ${SYS.postgres} and table_schema not like 'pg_toast%'
+        union all select n.nspname::text, c.relname::text, 'MATERIALIZED VIEW' from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'm' order by 1,2`),
+      await c.query(`select table_schema::text, table_name::text, column_name::text, data_type::text, is_nullable::text, ordinal_position::int as pos from information_schema.columns where table_schema not in ${SYS.postgres}
+        union all select n.nspname::text, c.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod), case when a.attnotnull then 'NO' else 'YES' end, a.attnum::int from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
+          where c.relkind = 'm' and a.attnum > 0 and not a.attisdropped order by 1, 2, 6`), r => r.rows),
     databases: async () => (await c.query('select datname from pg_database where not datistemplate order by 1')).rows.map(r => r.datname),
     ddl: async (schema, table) => {
+      const v = (await c.query(`select c.relkind, pg_get_viewdef(c.oid, true) as def from pg_class c where c.oid = $1::regclass`, [fullName('postgres', schema, table)])).rows[0];
+      if (v && (v.relkind === 'v' || v.relkind === 'm')) return `CREATE ${v.relkind === 'm' ? 'MATERIALIZED ' : ''}VIEW ${fullName('postgres', schema, table)} AS
+${v.def}`;
       const r = await c.query(`select column_name, data_type, character_maximum_length, is_nullable, column_default from information_schema.columns where table_schema=$1 and table_name=$2 order by ordinal_position`, [schema, table]);
       const cols = r.rows.map(x => `  ${Q.postgres(x.column_name)} ${x.data_type}${x.character_maximum_length ? `(${x.character_maximum_length})` : ''}${x.is_nullable === 'NO' ? ' NOT NULL' : ''}${x.column_default ? ' DEFAULT ' + x.column_default : ''}`);
       const idx = await c.query('select indexdef from pg_indexes where schemaname=$1 and tablename=$2', [schema, table]);
@@ -224,6 +230,8 @@ async function openMysql(cfg) {
   const c = await mysql.createConnection(opts);
   c.on('error', () => {});
   if (cfg.readOnly) await c.query('SET SESSION TRANSACTION READ ONLY');
+  // GROUP_CONCAT results are silently cut at 1024 characters by default
+  await c.query('SET SESSION group_concat_max_len = 4294967295').catch(() => {});
   if (cfg.timeout) await c.query(`SET SESSION max_execution_time = ${+cfg.timeout * 1000}`).catch(() => {});
   return {
     run: async sql => {
@@ -306,6 +314,8 @@ async function openMssql(cfg) {
       await pool.request().query(`select table_schema, table_name, column_name, data_type, is_nullable from information_schema.columns order by table_schema, table_name, ordinal_position`), r => r.recordset),
     databases: async () => (await pool.request().query('select name from sys.databases order by 1')).recordset.map(r => r.name),
     ddl: async (schema, table) => {
+      const def = (await pool.request().input('q', fullName('mssql', schema, table)).query(`select object_definition(object_id(@q)) as d`)).recordset[0];
+      if (def && def.d) return def.d; // views (tables have no definition text)
       const r = await pool.request().input('s', schema).input('t', table).query(`select column_name, data_type, character_maximum_length, is_nullable from information_schema.columns where table_schema=@s and table_name=@t order by ordinal_position`);
       return `CREATE TABLE ${Q.mssql(schema)}.${Q.mssql(table)} (\n${r.recordset.map(x => `  ${Q.mssql(x.column_name)} ${x.data_type}${x.character_maximum_length ? `(${x.character_maximum_length < 0 ? 'max' : x.character_maximum_length})` : ''}${x.is_nullable === 'NO' ? ' NOT NULL' : ''}`).join(',\n')}\n);`;
     },
@@ -406,7 +416,7 @@ async function openSqlite(cfg) {
 
 function tables(t, c, rowsOf) {
   const map = new Map();
-  for (const r of rowsOf(t)) map.set(`${r.table_schema}.${r.table_name}`, { schema: r.table_schema, name: r.table_name, type: /VIEW/i.test(r.table_type) ? 'VIEW' : 'TABLE', columns: [] });
+  for (const r of rowsOf(t)) map.set(`${r.table_schema}.${r.table_name}`, { schema: r.table_schema, name: r.table_name, type: /MATERIALIZED/i.test(r.table_type) ? 'MVIEW' : /VIEW/i.test(r.table_type) ? 'VIEW' : 'TABLE', columns: [] });
   for (const r of rowsOf(c)) { const x = map.get(`${r.table_schema}.${r.table_name}`); if (x) x.columns.push({ name: r.column_name, type: r.data_type, nullable: r.is_nullable === 'YES' }); }
   return [...map.values()];
 }
@@ -415,7 +425,8 @@ function tables(t, c, rowsOf) {
 // database field = service name (default) or SID (prefix with ':').
 async function openOracle(cfg) {
   const oracledb = require('oracledb');
-  oracledb.fetchAsString = [oracledb.CLOB, oracledb.NUMBER, oracledb.DATE];
+  oracledb.fetchAsString = [oracledb.CLOB, oracledb.NCLOB, oracledb.NUMBER, oracledb.DATE];
+  oracledb.fetchAsBuffer = [oracledb.BLOB]; // otherwise BLOBs arrive as Lob stream objects
   const svc = cfg.database || 'XEPDB1';
   const cs = cfg.connectString || `${cfg.host}:${+cfg.port || 1521}/${svc.replace(/^:/, '')}`.replace(/\/:/, ':');
   const c = await oracledb.getConnection({ user: cfg.user, password: cfg.password, connectString: cs });
@@ -433,15 +444,15 @@ async function openOracle(cfg) {
     schema: async () => {
       // the current schema's own tables/views (follows ALTER SESSION SET CURRENT_SCHEMA)
       const cur = (await c.execute(`select sys_context('userenv','current_schema') s from dual`)).rows[0][0] || owner;
-      const t = await c.execute(`select owner, table_name, 'TABLE' typ from all_tables where owner=:o union all select owner, view_name, 'VIEW' from all_views where owner=:o`, { o: cur }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+      const t = await c.execute(`select t.owner, t.table_name, case when m.mview_name is null then 'TABLE' else 'MATERIALIZED VIEW' end typ from all_tables t left join all_mviews m on m.owner = t.owner and m.mview_name = t.table_name where t.owner=:o union all select owner, view_name, 'VIEW' from all_views where owner=:o`, { o: cur }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       const col = await c.execute(`select owner, table_name, column_name, data_type, nullable from all_tab_columns where owner=:o order by table_name, column_id`, { o: cur }, { outFormat: oracledb.OUT_FORMAT_OBJECT });
       return tables({ rows: t.rows.map(r => ({ table_schema: r.OWNER, table_name: r.TABLE_NAME, table_type: r.TYP })) },
         { rows: col.rows.map(r => ({ table_schema: r.OWNER, table_name: r.TABLE_NAME, column_name: r.COLUMN_NAME, data_type: r.DATA_TYPE, is_nullable: r.NULLABLE === 'Y' ? 'YES' : 'NO' })) }, r => r.rows);
     },
     databases: async () => (await c.execute('select username from all_users order by 1')).rows.map(r => r[0]),
     ddl: async (schema, table) => {
-      try { const r = await c.execute('select dbms_metadata.get_ddl(\'TABLE\', :t, :s) from dual', { t: table, s: schema }); return String(r.rows[0][0]); }
-      catch { const r = await c.execute(`select column_name, data_type, nullable from all_tab_columns where owner=:s and table_name=:t order by column_id`, { s: schema, t: table }, { outFormat: oracledb.OUT_FORMAT_OBJECT }); return `CREATE TABLE "${schema}"."${table}" (\n${r.rows.map(x => `  "${x.COLUMN_NAME}" ${x.DATA_TYPE}${x.NULLABLE === 'N' ? ' NOT NULL' : ''}`).join(',\n')}\n);`; }
+      for (const kind of ['MATERIALIZED_VIEW', 'TABLE', 'VIEW']) { try { return String((await c.execute('select dbms_metadata.get_ddl(:k, :t, :s) from dual', { k: kind, t: table, s: schema })).rows[0][0]); } catch {} }
+      { const r = await c.execute(`select column_name, data_type, nullable from all_tab_columns where owner=:s and table_name=:t order by column_id`, { s: schema, t: table }, { outFormat: oracledb.OUT_FORMAT_OBJECT }); return `CREATE TABLE "${schema}"."${table}" (\n${r.rows.map(x => `  "${x.COLUMN_NAME}" ${x.DATA_TYPE}${x.NULLABLE === 'N' ? ' NOT NULL' : ''}`).join(',\n')}\n);`; }
     },
     objects: async () => {
       const cur = (await c.execute(`select sys_context('userenv','current_schema') from dual`)).rows[0][0] || owner;
@@ -582,9 +593,21 @@ const DEFAULT_PORTS = { postgres: 5432, mysql: 3306, mssql: 1433, oracle: 1521 }
 const BATCH = 1000;
 // row-returning statements that are streamed (limit+1 rows fetched, never the whole result)
 const STREAMED = new Set(['SELECT', 'WITH', 'VALUES', 'TABLE']);
-// full = keep whole binary values (exports); the grid only needs a preview
+// Binary values are shown like DBeaver's default "string" presentation: bytes that are valid, printable UTF-8 become
+// text, anything else 0x… hex. full = whole value (exports); the grid gets the first PREVIEW bytes.
+const PREVIEW = 65536;
+const isBin = v => Buffer.isBuffer(v) || v instanceof Uint8Array || v instanceof ArrayBuffer; // ODBC returns ArrayBuffer
+function binCell(v, full) {
+  const all = Buffer.from(v instanceof ArrayBuffer ? new Uint8Array(v) : v), b = full || all.length <= PREVIEW ? all : all.subarray(0, PREVIEW);
+  const more = b.length < all.length ? ` … [${all.length} bytes]` : '';
+  try { // stream: a multi-byte character cut at the preview edge is not an error
+    const t = new TextDecoder('utf-8', { fatal: true }).decode(b, { stream: !!more });
+    if (!/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) return t + more;
+  } catch {}
+  return '0x' + b.toString('hex') + more;
+}
 const toCell = (v, full = false) => v === null || v === undefined ? null : typeof v === 'bigint' ? v.toString() : v instanceof Date ? v.toISOString() :
-  Buffer.isBuffer(v) || v instanceof Uint8Array ? '0x' + (full ? Buffer.from(v).toString('hex') : Buffer.from(v).toString('hex').slice(0, 512)) : typeof v === 'object' ? JSON.stringify(v) : v;
+  isBin(v) ? binCell(v, full) : typeof v === 'object' ? JSON.stringify(v) : v;
 
 // Node reports a refused IPv4+IPv6 connect as an AggregateError with an EMPTY message: turn it into something readable.
 const NET_HINT = { ECONNREFUSED: 'connection refused — is the server running and the port right?', ETIMEDOUT: 'timed out — host unreachable or blocked by a firewall', ENOTFOUND: 'host name not found', EHOSTUNREACH: 'host unreachable', ECONNRESET: 'connection reset by the server' };
@@ -667,17 +690,19 @@ async function open(cfg) {
         if (cfg.readOnly && write) throw new Error(`Read-only connection: refused to run\n${stmt.slice(0, 200)}`);
         if (manual && write) { await begin(); pending++; }
         const t0 = Date.now();
+        let clipped = false; // a binary value was cut to its preview: exports must re-run the query for full values
+        const cell = v => { if (v && isBin(v) && v.byteLength > PREVIEW) clipped = true; return toCell(v); };
         try {
           const kw = (stripComments(stmt).trim().match(/^[A-Za-z]+/) || [''])[0].toUpperCase();
           if (!write && STREAMED.has(kw)) {
             const rows = [];
-            const f = await drv.fetch(stmt, limit, (_c, batch) => { for (const row of batch) rows.push(row.map(v => toCell(v))); });
+            const f = await drv.fetch(stmt, limit, (_c, batch) => { for (const row of batch) rows.push(row.map(cell)); });
             // rowCount null = more rows exist on the server (not counted, not downloaded)
-            out.push({ sql: stmt, columns: f.columns, rows, rowCount: f.more ? null : rows.length, truncated: f.more, affected: null, command: null, ms: Date.now() - t0 });
+            out.push({ sql: stmt, columns: f.columns, rows, rowCount: f.more ? null : rows.length, truncated: f.more, clipped, affected: null, command: null, ms: Date.now() - t0 });
             continue;
           }
           const r = await drv.run(stmt);
-          out.push({ sql: stmt, columns: r.columns, rows: r.rows.slice(0, limit).map(row => row.map(v => toCell(v))), rowCount: r.rows.length, truncated: r.rows.length > limit, affected: r.affected ?? null, command: r.command || null, ms: Date.now() - t0 });
+          out.push({ sql: stmt, columns: r.columns, rows: r.rows.slice(0, limit).map(row => row.map(cell)), rowCount: r.rows.length, truncated: r.rows.length > limit, clipped, affected: r.affected ?? null, command: r.command || null, ms: Date.now() - t0 });
         } catch (e) { e.message = `${e.message}\n\nIn statement:\n${stmt.slice(0, 500)}`; e.partial = out; throw e; }
       }
       return out;
@@ -733,13 +758,105 @@ function toInserts(engine, table, columns, rows) {
   const q = Q[engine] || Q.postgres;
   return rows.map(r => `INSERT INTO ${q(table)} (${columns.map(q).join(', ')}) VALUES (${r.map(v => lit(engine, v)).join(', ')});`).join('\n');
 }
-// Streaming export: w = exportWriter(fmt, table, engine); w.head(cols) + w.rows(cols, rows)... + w.tail()
-function exportWriter(fmt, table, engine) {
+// Export formats (DBeaver's data transfer targets). ext = file extension, text = can also be copied to the clipboard.
+const EXPORT_FORMATS = {
+  csv: { label: 'CSV', ext: 'csv', text: true }, tsv: { label: 'TSV (tab-separated)', ext: 'tsv', text: true },
+  txt: { label: 'TXT (aligned plain-text table)', ext: 'txt', text: true }, json: { label: 'JSON', ext: 'json', text: true },
+  sql: { label: 'SQL INSERT statements', ext: 'sql', text: true }, md: { label: 'Markdown table', ext: 'md', text: true },
+  html: { label: 'HTML table', ext: 'html', text: true }, xml: { label: 'XML', ext: 'xml', text: true },
+  xlsx: { label: 'Excel workbook (.xlsx)', ext: 'xlsx', text: false },
+};
+const XLSX_MAX_ROWS = 1048576;
+const xe = s => String(s).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// Streaming export: w = exportWriter(fmt, table, engine, opts); w.head(cols) + w.rows(cols, rows)... + w.tail();
+// xlsx: the streamed text is the sheet, then w.pack(file, out) wraps it into the workbook.
+// opts = { header = true, delimiter = ',', nullText = '', bom = false }. Values are written whole, never cut
+// (except Excel's own limit of 32,767 characters per cell).
+function exportWriter(fmt, table, engine, opts = {}) {
+  const header = opts.header !== false, nul = opts.nullText || '', bom = opts.bom && ['csv', 'tsv', 'txt'].includes(fmt) ? '﻿' : '';
+  const str = v => v === null || v === undefined ? nul : typeof v === 'object' ? JSON.stringify(v) : String(v);
   let n = 0;
-  if (fmt === 'csv') return { head: c => toCsv(c, []) + '\r\n', rows: (c, rows) => rows.length ? toCsv(c, rows).split('\r\n').slice(1).join('\r\n') + '\r\n' : '', tail: () => '' };
-  if (fmt === 'json') return { head: () => '[\n', rows: (c, rows) => rows.map(r => (n++ ? ',\n' : '') + '  ' + JSON.stringify(Object.fromEntries(c.map((k, i) => [k, r[i]])))).join(''), tail: () => '\n]\n' };
+  if (fmt === 'csv' || fmt === 'tsv') {
+    const d = fmt === 'tsv' ? '\t' : opts.delimiter || ',', needs = new RegExp(`["\\r\\n${d === '\t' ? '\\t' : d.replace(/[\\^$.*+?()[\]{}|-]/g, '\\$&')}]`);
+    const f = v => { const s = str(v); return needs.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const line = r => r.map(f).join(d) + '\r\n';
+    return { head: c => bom + (header ? line(c) : ''), rows: (c, rows) => rows.map(line).join(''), tail: () => '' };
+  }
+  if (fmt === 'txt') { // column widths come from the header and the first batch; later, longer values just push their row wider
+    let w = null;
+    const flat = v => str(v).replace(/\r?\n|\r/g, ' ').replace(/\t/g, ' ');
+    const line = r => '| ' + r.map((v, i) => { const s = flat(v); return typeof v === 'number' ? s.padStart(w[i]) : s.padEnd(w[i]); }).join(' | ') + ' |\r\n';
+    const start = (c, rows) => {
+      w = c.map((k, i) => Math.max(header ? String(k).length : 1, ...rows.map(r => flat(r[i]).length)));
+      const sep = '|' + w.map(x => '-'.repeat(x + 2)).join('|') + '|\r\n';
+      return bom + (header ? line(c) + sep : '');
+    };
+    return { head: () => '', rows: (c, rows) => (w ? '' : start(c, rows)) + rows.map(line).join(''), tail: c => w ? '' : start(c || [], []) };
+  }
+  if (fmt === 'json') return { head: () => '[\n', rows: (c, rows) => rows.map(r => (n++ ? ',\n' : '') + '  ' + JSON.stringify(Object.fromEntries(c.map((k, i) => [k, r[i] === undefined ? null : r[i]])))).join(''), tail: () => '\n]\n' };
+  if (fmt === 'md') {
+    const f = v => str(v).replace(/\|/g, '\\|').replace(/\r?\n|\r/g, '<br>');
+    return { head: c => header ? `| ${c.map(f).join(' | ')} |\n|${c.map(() => ' --- ').join('|')}|\n` : '', rows: (c, rows) => rows.map(r => `| ${r.map(f).join(' | ')} |\n`).join(''), tail: () => '' };
+  }
+  if (fmt === 'html') return {
+    head: c => `<!doctype html>\n<html><head><meta charset="utf-8"><title>${xe(table || 'Export')}</title><style>body{font:13px sans-serif}table{border-collapse:collapse}th,td{border:1px solid #bbb;padding:3px 8px;text-align:left;vertical-align:top;white-space:pre-wrap}th{background:#eee}td.n{text-align:right}td.null{color:#999;font-style:italic}</style></head><body>\n<table>\n${header ? `<tr>${c.map(k => `<th>${xe(k)}</th>`).join('')}</tr>\n` : ''}`,
+    rows: (c, rows) => rows.map(r => `<tr>${r.map(v => v === null || v === undefined ? `<td class="null">${xe(nul)}</td>` : `<td${typeof v === 'number' ? ' class="n"' : ''}>${xe(str(v))}</td>`).join('')}</tr>\n`).join(''),
+    tail: () => '</table>\n</body></html>\n',
+  };
+  if (fmt === 'xml') return {
+    head: () => `<?xml version="1.0" encoding="UTF-8"?>\n<export table="${xe(table || '')}">\n`,
+    rows: (c, rows) => rows.map(r => `  <row>\n${r.map((v, i) => v === null || v === undefined ? `    <column name="${xe(c[i])}" null="true"/>\n` : `    <column name="${xe(c[i])}">${xe(str(v))}</column>\n`).join('')}  </row>\n`).join(''),
+    tail: () => '</export>\n',
+  };
+  if (fmt === 'xlsx') {
+    const cellXml = (v, s = '') => v === null || v === undefined ? '<c/>' : typeof v === 'number' && isFinite(v) ? `<c${s}><v>${v}</v></c>`
+      : `<c t="inlineStr"${s}><is><t xml:space="preserve">${xe(str(v).slice(0, 32767))}</t></is></c>`;
+    const add = rows => { n += rows.length; if (n > XLSX_MAX_ROWS - (header ? 1 : 0)) throw new Error(`An Excel sheet holds at most ${XLSX_MAX_ROWS.toLocaleString('en')} rows: export this result as CSV instead`); };
+    return {
+      head: c => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0">${header ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' : ''}</sheetView></sheetViews><sheetData>\n${header ? `<row>${c.map(k => cellXml(k, ' s="1"')).join('')}</row>\n` : ''}`,
+      rows: (c, rows) => { add(rows); return rows.map(r => `<row>${r.map(v => cellXml(v)).join('')}</row>\n`).join(''); },
+      tail: () => '</sheetData></worksheet>\n',
+      pack: (sheetFile, out) => require('fs').writeFileSync(out, xlsxZip(require('fs').readFileSync(sheetFile), table)),
+    };
+  }
   return { head: () => '', rows: (c, rows) => rows.length ? toInserts(engine, table || 'table_name', c, rows) + '\n' : '', tail: () => '' };
+}
+// whole export as one string (clipboard "Copy as …"); not for xlsx
+function exportText(fmt, columns, rows, table, engine, opts) {
+  const w = exportWriter(fmt, table, engine, opts);
+  return w.head(columns) + w.rows(columns, rows) + w.tail(columns);
+}
+// ponytail: the sheet is read back whole to zip it; stream it through zlib if multi-GB workbooks ever matter
+function xlsxZip(sheet, table) {
+  const name = xe(String(table || 'Export').replace(/[\\/?*[\]:]/g, ' ').slice(0, 31) || 'Export');
+  return zip([
+    ['[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${name}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>'],
+    ['xl/worksheets/sheet1.xml', sheet],
+  ]);
+}
+// minimal ZIP writer (deflate), enough for an .xlsx package
+function zip(files) {
+  const zlib = require('zlib'), parts = [], central = [];
+  let off = 0;
+  for (const [n, d] of files) {
+    const name = Buffer.from(n), data = Buffer.isBuffer(d) ? d : Buffer.from(d), comp = zlib.deflateRawSync(data), crc = zlib.crc32(data);
+    const h = Buffer.alloc(30);
+    h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(8, 8); h.writeUInt16LE(0, 10); h.writeUInt16LE(33, 12);
+    h.writeUInt32LE(crc, 14); h.writeUInt32LE(comp.length, 18); h.writeUInt32LE(data.length, 22); h.writeUInt16LE(name.length, 26);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(0x0800, 8); c.writeUInt16LE(8, 10); c.writeUInt16LE(0, 12); c.writeUInt16LE(33, 14);
+    c.writeUInt32LE(crc, 16); c.writeUInt32LE(comp.length, 20); c.writeUInt32LE(data.length, 24); c.writeUInt16LE(name.length, 28); c.writeUInt32LE(off, 42);
+    parts.push(h, name, comp); central.push(c, name);
+    off += 30 + name.length + comp.length;
+  }
+  const cd = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat([...parts, cd, end]);
 }
 const toJson = (columns, rows) => JSON.stringify(rows.map(r => Object.fromEntries(columns.map((c, i) => [c, r[i]]))), null, 2);
 
-module.exports = { open, odbcConnString, FLAVORS, splitSql, statementAt, classify, selectSql, editSql, compareTables, toCsv, toJson, toInserts, exportWriter, toCell, DEFAULT_PORTS, Q };
+module.exports = { open, odbcConnString, FLAVORS, splitSql, statementAt, classify, selectSql, editSql, compareTables, toCsv, toJson, toInserts, exportWriter, exportText, EXPORT_FORMATS, xlsxZip, toCell, DEFAULT_PORTS, Q };

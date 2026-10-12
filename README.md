@@ -40,7 +40,7 @@ connections you open to your own servers and databases.
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Contributing](#contributing)
-- [Code signing policy](#code-signing-policy)
+- [Builds and privacy](#builds-and-privacy)
 - [Credits and license](#credits-and-license)
 
 ---
@@ -84,7 +84,8 @@ Supports **PostgreSQL, MySQL/MariaDB, Oracle, SQL Server and SQLite** out of the
 - Or choose **Other (ODBC)** and type a connection string directly.
 - ODBC connections get the schema tree, SQL editor, streaming result grid, export, filters, transactions, keys and foreign-key navigation (when the driver reports keys), and grid editing for tables with a primary key.
 
-- **Schema tree:** tables, views and columns with their types, plus functions, procedures, packages, sequences and triggers (view their source). Includes a database switcher.
+- **Navigator tree:** per schema, folders for tables, views, materialized views, functions, procedures, packages, sequences and triggers (view their source). Everything starts collapsed, and the folders you open stay open. Includes a database switcher.
+- **Open declaration:** F4 or Ctrl+click a table, view or routine name in the SQL editor to find it in the tree and open its properties or source.
 - **Scripts:** saved per connection (DBeaver-style), with Ctrl+S to save and searchable query history.
 - **SQL editor:**
   - Autocomplete that pops up as you type: tables, `alias.`/`table.` columns, bare column names of the tables in the query, and keywords.
@@ -94,9 +95,13 @@ Supports **PostgreSQL, MySQL/MariaDB, Oracle, SQL Server and SQLite** out of the
   - **Script variables:** `${name}` is asked for before running.
   - Understands `BEGIN … END` bodies, MySQL `DELIMITER` and Oracle `/` terminators.
 - **Result grid:**
+  - **Selection like DBeaver:** click, Shift+click, Ctrl+click or drag over cells; click or drag row numbers for whole rows and headers for whole columns; `#` or Ctrl+A selects everything. Arrow keys, Tab, Home/End and PgUp/PgDn move (Shift extends). The status bar shows the selection size, plus its sum and average when the values are numbers.
+  - **Copy:** Ctrl+C copies the selection (tab-separated, pastes cleanly into Excel), Ctrl+Shift+C adds column names, and *Copy as…* gives CSV, JSON, Markdown, SQL, HTML, XML or TXT.
+  - Smooth with very large results: only the visible rows are drawn. Columns can be resized by dragging the header edge.
+  - Binary values that hold text are shown as text; other bytes are shown as `0x…` hex.
   - Sort, find, a cell viewer, and multiple result sets.
   - **Server-side `WHERE` / `ORDER BY` filter** on table data.
-  - **Big results are streamed:** only the rows you see are downloaded, and **Fetch more** gets the next batch.
+  - **Big results are streamed:** only the rows you see are downloaded, **Fetch more** gets the next batch, and **Fetch all** gets every row.
 - **Editing data in the grid** (needs a primary key):
   - Edit cells inline (date picker for `DATE` columns), or in a large text/JSON editor.
   - Set NULL, add, duplicate and delete rows.
@@ -107,7 +112,7 @@ Supports **PostgreSQL, MySQL/MariaDB, Oracle, SQL Server and SQLite** out of the
 - **ER diagram:** for a table plus its related tables, or for the whole schema. Boxes can be dragged, and the diagram can be saved as SVG.
 - **Compare / sync data** between two tables, even across different engines. You get a summary (identical, different, only in source, only in target) and the SQL that would make the target match the source, opened for review.
 - **Table properties:** primary key, indexes and foreign keys.
-- **Export** to CSV, JSON or SQL INSERT. Choose the rows shown, the first N, or everything; large exports are **streamed straight to disk**, with binary values written in full.
+- **Export** to CSV, TSV, TXT (aligned table), JSON, SQL INSERT, Markdown, HTML, XML or Excel (.xlsx). Choose the rows shown, the selected cells, the first N, or everything. Options cover column names, CSV delimiter, NULL text and a UTF-8 BOM. Large exports are **streamed straight to disk**, and values are never cut (except Excel's own limit of 32,767 characters per cell).
 - **Safety:**
   - **Read-only** connections refuse writes before they reach the server.
   - **Production** connections confirm every write.
@@ -138,7 +143,7 @@ Download a release from the **Releases** page. You do not need Node, Electron or
 | `TermuCraft-<version>-x64.exe` | Installer: Start-menu and desktop shortcuts, lets you choose the folder, upgrades in place. |
 | `TermuCraft-<version>-portable.exe` | A single file that runs without installing; good for a USB stick. |
 
-The builds are not code-signed yet (see [Code signing policy](#code-signing-policy)), so Windows SmartScreen may say
+The builds are not code-signed (see [Builds and privacy](#builds-and-privacy)), so Windows SmartScreen may say
 *"Windows protected your PC"*. Click **More info → Run anyway**.
 
 Every release is built and tested on GitHub's own Windows servers from the public source code
@@ -201,7 +206,11 @@ SSH tunnels, saved passwords and the SQL scripts linked to each connection.
 | SQL editor | Ctrl+\\ | Run into a new result tab |
 | SQL editor | Ctrl+Shift+E / F | Explain plan / format SQL |
 | SQL editor | Ctrl+Space / Ctrl+S | Autocomplete / save script |
-| Result grid | double-click a cell, Enter, Esc, Tab | Edit / apply / cancel / next cell |
+| Result grid | click / Shift / Ctrl / drag, Ctrl+A | Select cells, rows (row numbers) or columns (headers) |
+| Result grid | Ctrl+C / Ctrl+Shift+C | Copy selection / with column names |
+| Result grid | double-click, Enter or F2, or start typing | Edit a cell (Esc cancels, Tab moves on) |
+| Result grid | Shift+Enter / Delete | View value / mark the selected rows for deletion |
+| SQL editor | F4 or Ctrl+click a name | Open the table / view / routine |
 | Anywhere | F12 | Developer tools |
 
 ## Security model
@@ -291,17 +300,10 @@ Please:
 - **never put real hosts, usernames, passwords or exported config files in code, tests, issues or screenshots.** Use made-up values; the existing tests show the pattern;
 - keep the code style: small functions, comments only where something is not obvious.
 
-## Code signing policy
+## Builds and privacy
 
-Windows releases are built by [GitHub Actions](.github/workflows/release.yml) from this repository's public source code.
-Free code signing for open-source projects from the [SignPath Foundation](https://signpath.org) is being set up.
-Once approved, releases will be signed through [SignPath.io](https://signpath.io) with a certificate issued to SignPath Foundation, and this section will say so.
-
-**Roles**
-- Committers and reviewers: [bmmbaaddt](https://github.com/bmmbaaddt)
-- Approvers (who approve each signed release): [bmmbaaddt](https://github.com/bmmbaaddt)
-
-Only code from this repository, built by the workflow above, is ever signed.
+Windows releases are built and tested by [GitHub Actions](.github/workflows/release.yml) from this repository's public source code.
+They are not code-signed.
 
 **Privacy policy:** this program does not send any information to other networked systems unless the user asks it
 to: the connections you open to your own servers and databases, the network tools you start (port scan, DNS lookup,
